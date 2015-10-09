@@ -10,13 +10,94 @@ package gobblin.tunnel;/*
  * CONDITIONS OF ANY KIND, either express or implied.
  */
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.util.Optional;
+
+
 /**
  * @author navteniev@linkedin.com
  *
  * Implements a tunnel through a proxy to resource on the internet
  */
 public class Tunnel {
-  public static int build(String remoteHost, int remotePort, String proxyHost, int proxyPort) {
-    throw new AbstractMethodError();
+
+  private final String _remoteHost;
+  private final int _remotePort;
+  private final String _proxyHost;
+  private final int _proxyPort;
+  private ServerSocketChannel _server;
+  private volatile boolean running = true;
+
+  private Tunnel(String remoteHost, int remotePort, String proxyHost, int proxyPort) {
+    _remoteHost = remoteHost;
+    _remotePort = remotePort;
+    _proxyHost = proxyHost;
+    _proxyPort = proxyPort;
+  }
+
+  private Optional<Tunnel> open() {
+    try {
+      _server = ServerSocketChannel.open().bind(null);
+      listen();
+
+      return Optional.of(this);
+    } catch (IOException e) {
+
+    }
+
+    return Optional.empty();
+  }
+
+  public int getPort() {
+    SocketAddress localAddress = null;
+    try {
+      localAddress = _server.getLocalAddress();
+    } catch (IOException e) {
+      e.printStackTrace();
+    }
+    if (localAddress instanceof InetSocketAddress) {
+      return ((InetSocketAddress) localAddress).getPort();
+    }
+
+    return -1;
+  }
+
+  private void listen() {
+    Thread thread = new Thread("Tunnel Listener");
+  }
+
+  private class Listener implements Runnable {
+
+    @Override
+    public void run() {
+
+      try {
+        while (running) {
+          SocketChannel client = _server.accept();
+        }
+      } catch (IOException e) {
+        e.printStackTrace();
+      } finally {
+        try {
+          _server.close();
+        } catch (IOException e) {
+          e.printStackTrace();
+        }
+      }
+
+      //connect to remote via proxy and setup a relay
+    }
+  }
+
+  public void close() {
+    running = false;
+  }
+
+  public static Optional<Tunnel> build(String remoteHost, int remotePort, String proxyHost, int proxyPort) {
+    return new Tunnel(remoteHost, remotePort, proxyHost, proxyPort).open();
   }
 }

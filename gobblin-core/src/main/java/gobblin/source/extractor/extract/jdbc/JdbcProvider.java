@@ -44,7 +44,7 @@ public class JdbcProvider extends BasicDataSource {
     if(proxyHost != null && proxyPort > 0){
       String remoteHost="";
       int remotePort = 0;
-      int tunnelPort = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort);
+      int tunnelPort = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort).get().getPort();
     }
 
 
