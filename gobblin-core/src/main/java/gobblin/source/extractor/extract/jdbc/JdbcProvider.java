@@ -23,16 +23,24 @@ import org.apache.commons.dbcp.BasicDataSource;
 public class JdbcProvider extends BasicDataSource {
   // If extract type is not provided then consider it as a default type
   public JdbcProvider(String driver, String connectionUrl, String user, String password, int numconn, int timeout) {
-    this.connect(driver, connectionUrl, user, password, numconn, timeout, "DEFAULT");
+    this.connect(driver, connectionUrl, user, password, numconn, timeout, "DEFAULT", null, -1);
   }
 
   public JdbcProvider(String driver, String connectionUrl, String user, String password, int numconn, int timeout,
       String type) {
-    this.connect(driver, connectionUrl, user, password, numconn, timeout, type);
+    this.connect(driver, connectionUrl, user, password, numconn, timeout, type, null, -1);
+  }
+
+  public JdbcProvider(String driver, String connectionUrl, String user, String password, int numconn, int timeout,
+      String type, String proxyHost, int proxyPort){
+
   }
 
   public void connect(String driver, String connectionUrl, String user, String password, int numconn, int timeout,
-      String type) {
+      String type, String proxyHost, int proxyPort) {
+
+    //TODO setup the tunnel
+
     this.setDriverClassName(driver);
     this.setUsername(user);
     this.setPassword(password);
