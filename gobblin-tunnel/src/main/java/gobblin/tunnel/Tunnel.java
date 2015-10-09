@@ -16,4 +16,7 @@ package gobblin.tunnel;/*
  * Implements a tunnel through a proxy to resource on the internet
  */
 public class Tunnel {
+  public static int build(String remoteHost, int remotePort, String proxyHost, int proxyPort) {
+    throw new AbstractMethodError();
+  }
 }

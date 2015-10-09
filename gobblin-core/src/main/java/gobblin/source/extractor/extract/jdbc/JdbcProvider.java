@@ -12,6 +12,7 @@
 
 package gobblin.source.extractor.extract.jdbc;
 
+import gobblin.tunnel.Tunnel;
 import org.apache.commons.dbcp.BasicDataSource;
 
 
@@ -40,6 +41,12 @@ public class JdbcProvider extends BasicDataSource {
       String type, String proxyHost, int proxyPort) {
 
     //TODO setup the tunnel
+    if(proxyHost != null && proxyPort > 0){
+      String remoteHost="";
+      int remotePort = 0;
+      int tunnelPort = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort);
+    }
+
 
     this.setDriverClassName(driver);
     this.setUsername(user);
