@@ -86,40 +86,32 @@ public class Tunnel {
 
   private class Listener implements Runnable {
 
+    private Selector _selector;
+
+    public Listener(){
+      try {
+        _selector = Selector.open();
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+    }
 
 
     @Override
     public void run() {
-        Selector selector;
-
-      try {
-        selector = Selector.open();
-      } catch (IOException e) {
-        return;
-      }
-
       try {
 
         _server.configureBlocking(false);
-        _server.register(selector, SelectionKey.OP_ACCEPT);
+        _server.register(_selector, SelectionKey.OP_ACCEPT);
 
         while (_running) {
 
-          selector.select();
-
-          Set<SelectionKey> selectionKeys = selector.selectedKeys();
+          _selector.select();
+          Set<SelectionKey> selectionKeys = _selector.selectedKeys();
 
           for (SelectionKey selectionKey : new LinkedHashSet<SelectionKey>(selectionKeys)) {
             if(selectionKey.isAcceptable()){
-              SocketChannel client = ((ServerSocketChannel) selectionKey.channel()).accept();
-
-              ByteBuffer buffer = ByteBuffer.allocate(1000000);
-              client.configureBlocking(false);
-              client.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
-
-              SocketChannel proxy = connect();
-              proxy.configureBlocking(false);
-              proxy.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
+              acceptNewConnection(selectionKey);
             } else if (selectionKey.isReadable()){
               SocketChannel channel = (SocketChannel) selectionKey.channel();
               ByteBuffer buffer = (ByteBuffer)selectionKey.attachment();
@@ -151,6 +143,31 @@ public class Tunnel {
 
       System.out.println("_running = " + _running);
       //connect to remote via proxy and setup a relay
+    }
+
+    private void acceptNewConnection(SelectionKey selectionKey) {
+      SocketChannel client = null;
+
+      try {
+        client = ((ServerSocketChannel) selectionKey.channel()).accept();
+
+        ByteBuffer buffer = ByteBuffer.allocate(1000000);
+        client.configureBlocking(false);
+        client.register(_selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
+
+        SocketChannel proxy = connect();
+        proxy.configureBlocking(false);
+        proxy.register(_selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
+      }catch (IOException io){
+        io.printStackTrace();
+
+        if(client != null && client.isOpen()){
+          try {
+            client.close();
+          } catch (IOException ignore) {
+          }
+        }
+      }
     }
   }
 
