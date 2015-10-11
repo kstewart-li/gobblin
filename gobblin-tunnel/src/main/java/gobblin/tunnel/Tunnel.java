@@ -18,7 +18,6 @@ import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -99,8 +98,6 @@ public class Tunnel {
         return;
       }
 
-      System.out.println("_running = " + _running);
-
       try {
 
         _server.configureBlocking(false);
@@ -127,19 +124,14 @@ public class Tunnel {
               SocketChannel channel = (SocketChannel) selectionKey.channel();
               ByteBuffer buffer = (ByteBuffer)selectionKey.attachment();
 
-              int bytesRead;
-              while ((bytesRead = channel.read(buffer)) > 0) {
-                System.out.printf("%d bytes read%n", bytesRead);
-              }
+              while (channel.read(buffer) > 0);
+
             } else if (selectionKey.isWritable()){
               SocketChannel channel = (SocketChannel) selectionKey.channel();
               ByteBuffer buffer = (ByteBuffer)selectionKey.attachment();
 
               buffer.flip();
-              int bytesWritten;
-              while ((bytesWritten = channel.write(buffer)) > 0) {
-                System.out.printf("%d bytes written%n",bytesWritten);
-              }
+              while (channel.write(buffer)> 0);
 
               buffer.compact();
             }
@@ -240,7 +232,8 @@ public class Tunnel {
       proxyChannel.socket().connect(new InetSocketAddress(proxyHost, proxyPort), 5000);
 
       final ByteBuffer connect = ByteBuffer.wrap(
-          String.format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", host, port, host)
+          String.format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", host, port,
+              host)
               .getBytes());
 
       while (proxyChannel.write(connect) > 0) {
