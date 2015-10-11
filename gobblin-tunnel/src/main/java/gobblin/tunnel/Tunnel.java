@@ -18,8 +18,12 @@ import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SelectableChannel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
 
@@ -83,42 +87,65 @@ public class Tunnel {
 
   private class Listener implements Runnable {
 
+
+
     @Override
     public void run() {
+        Selector selector;
+
+      try {
+        selector = Selector.open();
+      } catch (IOException e) {
+        return;
+      }
 
       System.out.println("_running = " + _running);
 
       try {
+
+        _server.configureBlocking(false);
+        _server.register(selector, SelectionKey.OP_ACCEPT);
+
         while (_running) {
-          SocketChannel client = _server.accept();
 
-          System.out.println("client.getLocalAddress() = " + client.getLocalAddress());
-          SocketChannel proxy = connect();
+          selector.select();
 
-          System.out.println("connected = " + proxy);
+          Set<SelectionKey> selectionKeys = selector.selectedKeys();
 
-          ByteBuffer byteBuffer = ByteBuffer.allocateDirect(1000000);
+          for (SelectionKey selectionKey : new LinkedHashSet<SelectionKey>(selectionKeys)) {
+            if(selectionKey.isAcceptable()){
+              SocketChannel client = ((ServerSocketChannel) selectionKey.channel()).accept();
 
-          int bytesRead = 0;
-          while((bytesRead = client.read(byteBuffer)) > 0){
-            System.out.println("read bytes " + bytesRead);
-            byteBuffer.flip();
-            int wroteBytes = 0;
-            while((wroteBytes=proxy.write(byteBuffer)) > 0){
-              System.out.println("wrote bytes "+wroteBytes);
+              ByteBuffer buffer = ByteBuffer.allocate(1000000);
+              client.configureBlocking(false);
+              client.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
+
+              SocketChannel proxy = connect();
+              proxy.configureBlocking(false);
+              proxy.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
+            } else if (selectionKey.isReadable()){
+              SocketChannel channel = (SocketChannel) selectionKey.channel();
+              ByteBuffer buffer = (ByteBuffer)selectionKey.attachment();
+
+              int bytesRead;
+              while ((bytesRead = channel.read(buffer)) > 0) {
+                System.out.printf("%d bytes read%n", bytesRead);
+              }
+            } else if (selectionKey.isWritable()){
+              SocketChannel channel = (SocketChannel) selectionKey.channel();
+              ByteBuffer buffer = (ByteBuffer)selectionKey.attachment();
+
+              buffer.flip();
+              int bytesWritten;
+              while ((bytesWritten = channel.write(buffer)) > 0) {
+                System.out.printf("%d bytes written%n",bytesWritten);
+              }
+
+              buffer.compact();
             }
+
+            selectionKeys.remove(selectionKey);
           }
-
-          byteBuffer.clear();
-          while(proxy.read(byteBuffer) > 0){
-            System.out.println("read from proxy");
-            byteBuffer.flip();
-            while (client.write(byteBuffer) > 0){
-              System.out.println("wrote to client");
-            }
-          }
-
-
         }
       } catch (IOException e) {
         e.printStackTrace();
