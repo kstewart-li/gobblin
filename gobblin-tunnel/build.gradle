@@ -11,8 +11,12 @@
 apply plugin: 'java'
 
 dependencies {
+  compile externalDependency.slf4j
+  runtime externalDependency.slf4jLog4j
+
   testCompile externalDependency.testng
 }
+
 
 configurations {
   compile {

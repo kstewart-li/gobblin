@@ -25,6 +25,7 @@ import java.nio.channels.SocketChannel;
 import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
+import org.slf4j.LoggerFactory;
 
 
 /**
@@ -33,6 +34,8 @@ import java.util.Set;
  * Implements a tunnel through a proxy to resource on the internet
  */
 public class Tunnel {
+
+  private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(Tunnel.class);
 
   private final String _remoteHost;
   private final int _remotePort;
@@ -55,11 +58,11 @@ public class Tunnel {
   private Optional<Tunnel> open() {
     try {
       _server = ServerSocketChannel.open().bind(null);
-      listen();
+      startTunnelThread();
 
       return Optional.of(this);
-    } catch (IOException e) {
-
+    } catch (IOException ioe) {
+      LOG.error("Failed to open the tunnel", ioe);
     }
 
     return Optional.empty();
@@ -68,18 +71,21 @@ public class Tunnel {
   public int getPort() {
     SocketAddress localAddress = null;
     try {
-      localAddress = _server.getLocalAddress();
+      if(_server != null && _server.isOpen()) {
+        localAddress = _server.getLocalAddress();
+      }
+      if (localAddress instanceof InetSocketAddress) {
+        return ((InetSocketAddress) localAddress).getPort();
+      }
+
     } catch (IOException e) {
-      e.printStackTrace();
-    }
-    if (localAddress instanceof InetSocketAddress) {
-      return ((InetSocketAddress) localAddress).getPort();
+      LOG.error("Failed to get tunnel port", e);
     }
 
     return -1;
   }
 
-  private void listen() {
+  private void startTunnelThread() {
     _thread = new Thread(new Listener(), "Tunnel Listener");
     _thread.start();
   }
@@ -100,7 +106,6 @@ public class Tunnel {
     @Override
     public void run() {
       try {
-
         _server.configureBlocking(false);
         _server.register(_selector, SelectionKey.OP_ACCEPT);
 
@@ -131,18 +136,11 @@ public class Tunnel {
             selectionKeys.remove(selectionKey);
           }
         }
-      } catch (IOException e) {
-        e.printStackTrace();
-      } finally {
-        try {
-          _server.close();
-        } catch (IOException e) {
-          e.printStackTrace();
-        }
+      } catch (IOException ioe) {
+        LOG.error("Unhandled exception.  Tunnel will close", ioe);
       }
 
-      System.out.println("_running = " + _running);
-      //connect to remote via proxy and setup a relay
+      LOG.info("Closing tunnel");
     }
 
     private void acceptNewConnection(SelectionKey selectionKey) {
@@ -158,10 +156,13 @@ public class Tunnel {
         SocketChannel proxy = connect();
         proxy.configureBlocking(false);
         proxy.register(_selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
-      }catch (IOException io){
-        io.printStackTrace();
-
-        if(client != null && client.isOpen()){
+      } catch (IOException io) {
+        if (client == null) {
+          LOG.warn("Failed to accept connection from client", io);
+        } else if (client.isOpen()) {
+          LOG.warn(
+              String.format("Failed to connect to proxy dropping connection from %s", client),
+              io);
           try {
             client.close();
           } catch (IOException ignore) {
@@ -287,6 +288,12 @@ public class Tunnel {
       _thread.join();
     } catch (InterruptedException e) {
       throw new RuntimeException(e);
+    }   finally {
+      try {
+        _server.close();
+      } catch (IOException ioe) {
+        LOG.warn("Failed to shutdown tunnel", ioe);
+      }
     }
   }
 
