@@ -57,8 +57,7 @@ public class TunnelTest {
       client.write(ByteBuffer.wrap("GET / HTTP/1.1%nUser-Agent: GaaP%nConnection:keep - alive %n%n".getBytes()));
       client.close();
 
-      Thread.sleep(TimeUnit.MINUTES.toMillis(1));
-//      assertNotNull(fetchContent(tunnelPort));
+      assertNotNull(fetchContent(tunnelPort));
     } finally {
       tunnel.get().close();
     }

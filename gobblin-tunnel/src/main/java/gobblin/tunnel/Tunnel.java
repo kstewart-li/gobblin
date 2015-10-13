@@ -22,6 +22,7 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
@@ -112,28 +113,36 @@ public class Tunnel {
         while (_running) {
 
           _selector.select();
-          Set<SelectionKey> selectionKeys = _selector.selectedKeys();
+          Iterator<SelectionKey> selectionKeys = _selector.selectedKeys().iterator();
 
-          for (SelectionKey selectionKey : new LinkedHashSet<SelectionKey>(selectionKeys)) {
+          while (selectionKeys.hasNext()) {
+            SelectionKey selectionKey = selectionKeys.next();
+
             if(selectionKey.isAcceptable()){
               acceptNewConnection(selectionKey);
-            } else if (selectionKey.isReadable()){
+            } else if (selectionKey.isReadable()) {
               SocketChannel channel = (SocketChannel) selectionKey.channel();
-              ByteBuffer buffer = (ByteBuffer)selectionKey.attachment();
+              ByteBuffer buffer = (ByteBuffer) selectionKey.attachment();
 
-              while (channel.read(buffer) > 0);
+              int count;
+              LOG.info("reading bytes from {}", channel);
+              while ((count = channel.read(buffer)) > 0) ;
 
+              if(count < 0) {
+                LOG.info("{} reached end of file", channel);
+                channel.close();
+              }
             } else if (selectionKey.isWritable()){
               SocketChannel channel = (SocketChannel) selectionKey.channel();
               ByteBuffer buffer = (ByteBuffer)selectionKey.attachment();
 
-              buffer.flip();
-              while (channel.write(buffer)> 0);
-
-              buffer.compact();
+                LOG.info("Writing to {}", channel);
+                buffer.flip();
+                while (channel.write(buffer) > 0) ;
+                buffer.compact();
             }
 
-            selectionKeys.remove(selectionKey);
+            selectionKeys.remove();
           }
         }
       } catch (IOException ioe) {
@@ -148,6 +157,8 @@ public class Tunnel {
 
       try {
         client = ((ServerSocketChannel) selectionKey.channel()).accept();
+
+        LOG.info("Accepted connection from {}", client);
 
         ByteBuffer buffer = ByteBuffer.allocate(1000000);
         client.configureBlocking(false);
