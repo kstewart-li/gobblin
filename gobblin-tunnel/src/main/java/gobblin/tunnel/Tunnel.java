@@ -1,4 +1,5 @@
-package gobblin.tunnel;/*
+package gobblin.tunnel;
+/*
  * Copyright (C) 2014-2015 LinkedIn Corp. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
@@ -23,7 +24,6 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
 import org.slf4j.LoggerFactory;
@@ -43,7 +43,6 @@ public class Tunnel {
   private final String _proxyHost;
   private final int _proxyPort;
   private ServerSocketChannel _server;
-  private volatile boolean _running = true;
   private Thread _thread;
   private static final ByteBuffer OK_REPLY = ByteBuffer.wrap("HTTP/1.1 200".getBytes());
   private static final Set<ByteBuffer> OK_REPLIES =
@@ -72,13 +71,12 @@ public class Tunnel {
   public int getPort() {
     SocketAddress localAddress = null;
     try {
-      if(_server != null && _server.isOpen()) {
+      if (_server != null && _server.isOpen()) {
         localAddress = _server.getLocalAddress();
       }
       if (localAddress instanceof InetSocketAddress) {
         return ((InetSocketAddress) localAddress).getPort();
       }
-
     } catch (IOException e) {
       LOG.error("Failed to get tunnel port", e);
     }
@@ -95,7 +93,7 @@ public class Tunnel {
 
     private Selector _selector;
 
-    public Listener(){
+    public Listener() {
       try {
         _selector = Selector.open();
       } catch (IOException e) {
@@ -103,53 +101,58 @@ public class Tunnel {
       }
     }
 
-
     @Override
     public void run() {
       try {
         _server.configureBlocking(false);
         _server.register(_selector, SelectionKey.OP_ACCEPT);
 
-        while (_running) {
+        while (!Thread.interrupted()) {
 
           _selector.select();
-          Iterator<SelectionKey> selectionKeys = _selector.selectedKeys().iterator();
+          Set<SelectionKey> selectionKeys = _selector.selectedKeys();
 
-          while (selectionKeys.hasNext()) {
-            SelectionKey selectionKey = selectionKeys.next();
-
-            if(selectionKey.isAcceptable()){
-              acceptNewConnection(selectionKey);
-            } else if (selectionKey.isReadable()) {
-              SocketChannel channel = (SocketChannel) selectionKey.channel();
-              ByteBuffer buffer = (ByteBuffer) selectionKey.attachment();
-
-              int count;
-              LOG.info("reading bytes from {}", channel);
-              while ((count = channel.read(buffer)) > 0) ;
-
-              if(count < 0) {
-                LOG.info("{} reached end of file", channel);
-                channel.close();
-              }
-            } else if (selectionKey.isWritable()){
-              SocketChannel channel = (SocketChannel) selectionKey.channel();
-              ByteBuffer buffer = (ByteBuffer)selectionKey.attachment();
-
-                LOG.info("Writing to {}", channel);
-                buffer.flip();
-                while (channel.write(buffer) > 0) ;
-                buffer.compact();
-            }
-
-            selectionKeys.remove();
+          for (SelectionKey selectionKey : selectionKeys) {
+            dispatch(selectionKey);
           }
+          selectionKeys.clear();
         }
       } catch (IOException ioe) {
         LOG.error("Unhandled exception.  Tunnel will close", ioe);
       }
 
       LOG.info("Closing tunnel");
+    }
+
+    private void dispatch(SelectionKey selectionKey)
+        throws IOException {
+      if (selectionKey.isAcceptable()) {
+        acceptNewConnection(selectionKey);
+      } else if (selectionKey.isReadable()) {
+        SocketChannel channel = (SocketChannel) selectionKey.channel();
+        ByteBuffer buffer = (ByteBuffer) selectionKey.attachment();
+
+        int count;
+        LOG.info("reading bytes from {}", channel);
+        while ((count = channel.read(buffer)) > 0) {
+          ;
+        }
+
+        if (count < 0) {
+          LOG.info("{} reached end of file", channel);
+          channel.close();
+        }
+      } else if (selectionKey.isWritable()) {
+        SocketChannel channel = (SocketChannel) selectionKey.channel();
+        ByteBuffer buffer = (ByteBuffer) selectionKey.attachment();
+
+        LOG.info("Writing to {}", channel);
+        buffer.flip();
+        while (channel.write(buffer) > 0) {
+          ;
+        }
+        buffer.compact();
+      }
     }
 
     private void acceptNewConnection(SelectionKey selectionKey) {
@@ -171,9 +174,7 @@ public class Tunnel {
         if (client == null) {
           LOG.warn("Failed to accept connection from client", io);
         } else if (client.isOpen()) {
-          LOG.warn(
-              String.format("Failed to connect to proxy dropping connection from %s", client),
-              io);
+          LOG.warn(String.format("Failed to connect to proxy dropping connection from %s", client), io);
           try {
             client.close();
           } catch (IOException ignore) {
@@ -183,10 +184,9 @@ public class Tunnel {
     }
   }
 
-
   protected SocketChannel connect()
       throws IOException {
-   final SocketChannel proxyChannel = requestConnectionToRemoteHost(_remoteHost, _remotePort, _proxyHost, _proxyPort);
+    final SocketChannel proxyChannel = requestConnectionToRemoteHost(_remoteHost, _remotePort, _proxyHost, _proxyPort);
     final ByteBuffer statusLine = readVersionAndStatus(proxyChannel);
 
     if (!OK_REPLIES.contains(statusLine)) {
@@ -247,8 +247,7 @@ public class Tunnel {
     return Channels.newChannel(channel.socket().getInputStream());
   }
 
-  private SocketChannel requestConnectionToRemoteHost(String host, int port,
-      String proxyHost, int proxyPort)
+  private SocketChannel requestConnectionToRemoteHost(String host, int port, String proxyHost, int proxyPort)
       throws IOException {
     final SocketChannel proxyChannel = SocketChannel.open();
 
@@ -260,9 +259,8 @@ public class Tunnel {
       proxyChannel.socket().setTcpNoDelay(true);
       proxyChannel.socket().connect(new InetSocketAddress(proxyHost, proxyPort), 5000);
 
-      final ByteBuffer connect = ByteBuffer.wrap(
-          String.format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", host, port,
-              host)
+      final ByteBuffer connect = ByteBuffer.wrap(String
+              .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", host, port, host)
               .getBytes());
 
       while (proxyChannel.write(connect) > 0) {
@@ -277,7 +275,6 @@ public class Tunnel {
     }
 
     return proxyChannel;
-
   }
 
   private void drainChannel(SocketChannel socketChannel)
@@ -292,14 +289,12 @@ public class Tunnel {
   }
 
   public void close() {
-    _running = false;
-
     try {
       _thread.interrupt();
       _thread.join();
     } catch (InterruptedException e) {
       throw new RuntimeException(e);
-    }   finally {
+    } finally {
       try {
         _server.close();
       } catch (IOException ioe) {
