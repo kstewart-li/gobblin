@@ -18,15 +18,18 @@ import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
-import java.util.Iterator;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import org.slf4j.LoggerFactory;
+
+import static java.nio.channels.SelectionKey.OP_READ;
 
 
 /**
@@ -85,15 +88,15 @@ public class Tunnel {
   }
 
   private void startTunnelThread() {
-    _thread = new Thread(new Listener(), "Tunnel Listener");
+    _thread = new Thread(new Dispatcher(), "Tunnel Listener");
     _thread.start();
   }
 
-  private class Listener implements Runnable {
+  private class Dispatcher implements Runnable {
 
     private Selector _selector;
 
-    public Listener() {
+    public Dispatcher() {
       try {
         _selector = Selector.open();
       } catch (IOException e) {
@@ -128,30 +131,13 @@ public class Tunnel {
         throws IOException {
       if (selectionKey.isAcceptable()) {
         acceptNewConnection(selectionKey);
-      } else if (selectionKey.isReadable()) {
-        SocketChannel channel = (SocketChannel) selectionKey.channel();
-        ByteBuffer buffer = (ByteBuffer) selectionKey.attachment();
-
-        int count;
-        LOG.info("reading bytes from {}", channel);
-        while ((count = channel.read(buffer)) > 0) {
-          ;
+      } else if (selectionKey.isReadable() || selectionKey.isWritable()) {
+        ReadWriteHandler handler = (ReadWriteHandler) selectionKey.attachment();
+        try {
+          handler.call();
+        } catch (Exception e) {
+          LOG.warn("Failed to handle read/write event", e);
         }
-
-        if (count < 0) {
-          LOG.info("{} reached end of file", channel);
-          channel.close();
-        }
-      } else if (selectionKey.isWritable()) {
-        SocketChannel channel = (SocketChannel) selectionKey.channel();
-        ByteBuffer buffer = (ByteBuffer) selectionKey.attachment();
-
-        LOG.info("Writing to {}", channel);
-        buffer.flip();
-        while (channel.write(buffer) > 0) {
-          ;
-        }
-        buffer.compact();
       }
     }
 
@@ -163,13 +149,8 @@ public class Tunnel {
 
         LOG.info("Accepted connection from {}", client);
 
-        ByteBuffer buffer = ByteBuffer.allocate(1000000);
-        client.configureBlocking(false);
-        client.register(_selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
-
         SocketChannel proxy = connect();
-        proxy.configureBlocking(false);
-        proxy.register(_selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, buffer);
+        new ReadWriteHandler(proxy, client, _selector);
       } catch (IOException io) {
         if (client == null) {
           LOG.warn("Failed to accept connection from client", io);
@@ -196,7 +177,7 @@ public class Tunnel {
       try {
         proxyChannel.close();
       } catch (IOException e) {
-        System.out.println(e);
+        LOG.warn("failed to close connection to proxy", e);
       }
 
       throw new IOException(String.format("Failed to connect to proxy %s:%n%s", _remoteHost, _remotePort,
@@ -260,8 +241,8 @@ public class Tunnel {
       proxyChannel.socket().connect(new InetSocketAddress(proxyHost, proxyPort), 5000);
 
       final ByteBuffer connect = ByteBuffer.wrap(String
-              .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", host, port, host)
-              .getBytes());
+          .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", host, port, host)
+          .getBytes());
 
       while (proxyChannel.write(connect) > 0) {
       }
@@ -299,6 +280,153 @@ public class Tunnel {
         _server.close();
       } catch (IOException ioe) {
         LOG.warn("Failed to shutdown tunnel", ioe);
+      }
+    }
+  }
+
+  /**
+   * This class is not thread safe
+   */
+  final class ReadWriteHandler implements Callable<Boolean> {
+    private final SocketChannel _proxy;
+    private final SocketChannel _client;
+    private final Selector _selector;
+    private final ByteBuffer _buffer = ByteBuffer.allocate(1000000);
+    private boolean reading = true;
+
+    ReadWriteHandler(SocketChannel proxy, SocketChannel client, Selector selector)
+        throws IOException {
+      _proxy = proxy;
+      _client = client;
+      _selector = selector;
+
+      _proxy.configureBlocking(false);
+      _client.configureBlocking(false);
+
+      _proxy.register(_selector, OP_READ, this);
+      _client.register(_selector, OP_READ, this);
+    }
+
+    @Override
+    public Boolean call()
+        throws Exception {
+
+      try {
+        if (reading) {
+          read();
+        } else {
+          write();
+        }
+      } catch (IOException ioe) {
+        closeChannels();
+        throw new IOException(String.format("Could not read/write between %s and %s", _proxy, _client), ioe);
+      }
+
+      return reading;
+    }
+
+    private void write()
+        throws IOException {
+      SelectionKey proxyKey = _proxy.keyFor(_selector);
+      SelectionKey clientKey = _client.keyFor(_selector);
+
+      SocketChannel writeChannel = null;
+      SocketChannel readChannel = null;
+      SelectionKey writeKey = null;
+
+      if (_selector.selectedKeys().contains(proxyKey) && proxyKey.isWritable()) {
+        writeChannel = _proxy;
+        readChannel = _client;
+        writeKey = proxyKey;
+      } else if (_selector.selectedKeys().contains(clientKey) && clientKey.isWritable()) {
+        writeChannel = _client;
+        readChannel = _proxy;
+        writeKey = clientKey;
+      }
+
+      if (writeKey != null) {
+        int lastWrite, totalWrite = 0;
+
+        _buffer.flip();
+
+        int available = _buffer.remaining();
+
+        while ((lastWrite = writeChannel.write(_buffer)) > 0) {
+          totalWrite += lastWrite;
+        }
+
+        if (totalWrite == available) {
+          _buffer.clear();
+          if(readChannel.isOpen()) {
+            readChannel.register(_selector, SelectionKey.OP_READ, this);
+            writeChannel.register(_selector, SelectionKey.OP_READ, this);
+          }
+          else{
+            writeChannel.close();
+          }
+          reading = true;
+        } else {
+          _buffer.compact();
+        }
+        if (lastWrite == -1) {
+          closeChannels();
+        }
+      }
+    }
+
+    private void read()
+        throws IOException {
+      SelectionKey proxyKey = _proxy.keyFor(_selector);
+      SelectionKey clientKey = _client.keyFor(_selector);
+
+      SocketChannel readChannel = null;
+      SocketChannel writeChannel = null;
+      SelectionKey readKey = null;
+
+      if (_selector.selectedKeys().contains(proxyKey) && proxyKey.isReadable()) {
+        readChannel = _proxy;
+        writeChannel = _client;
+        readKey = proxyKey;
+      } else if (_selector.selectedKeys().contains(clientKey) && clientKey.isReadable()) {
+        readChannel = _client;
+        writeChannel = _proxy;
+        readKey = clientKey;
+      }
+
+      if (readKey != null) {
+
+        int lastRead, totalRead = 0;
+
+        while ((lastRead = readChannel.read(_buffer)) > 0) {
+          totalRead += lastRead;
+        }
+
+        if (totalRead > 0) {
+          readKey.cancel();
+          writeChannel.register(_selector, SelectionKey.OP_WRITE, this);
+          reading = false;
+        }
+        if (lastRead == -1) {
+          readChannel.close();
+        }
+      }
+    }
+
+    private void closeChannels() {
+      if (_proxy.isOpen()) {
+        try {
+          _proxy.close();
+        } catch (IOException log) {
+          //log
+        }
+      }
+
+      if (_client.isOpen()) {
+        try {
+          _client.close();
+        } catch (IOException log) {
+          //log
+        }
       }
     }
   }
