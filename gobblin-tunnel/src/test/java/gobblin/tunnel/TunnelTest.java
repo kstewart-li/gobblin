@@ -152,7 +152,8 @@ public class TunnelTest {
 
   private String fetchContent(int tunnelPort)
       throws IOException {
-    return IOUtils.toString((InputStream) new URL(String.format("http://localhost:%s/", tunnelPort))
-        .getContent(new Class[]{InputStream.class}));
+    InputStream content = (InputStream) new URL(String.format("http://localhost:%s/", tunnelPort)).openConnection()
+        .getContent(new Class[]{InputStream.class});
+    return IOUtils.toString(content);
   }
 }

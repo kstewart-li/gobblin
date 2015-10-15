@@ -176,6 +176,8 @@ public class Tunnel {
         throws Exception {
 
       SocketChannel client = _server.accept();
+
+      LOG.info("Accepted connection from {}", client.getRemoteAddress());
       try{
         new ProxySetupHandler(client, _selector);
       } catch (IOException ioe){
@@ -236,7 +238,7 @@ public class Tunnel {
             break;
         }
       }catch (IOException ioe){
-        LOG.warn("Failed to establish a proxy connection for {}", _client, ioe);
+        LOG.warn("Failed to establish a proxy connection for {}", _client.getRemoteAddress(), ioe);
         closeChannels();
       }
 
