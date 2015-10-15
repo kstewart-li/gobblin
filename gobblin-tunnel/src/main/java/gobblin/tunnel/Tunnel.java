@@ -15,10 +15,7 @@ import com.google.common.collect.Sets;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
-import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -39,6 +36,7 @@ import static java.nio.channels.SelectionKey.OP_READ;
 public class Tunnel {
 
   private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(Tunnel.class);
+  public static final int PROXY_CONNECT_TIMEOUT = 1000;
 
   private final String _remoteHost;
   private final int _remotePort;
@@ -193,10 +191,11 @@ public class Tunnel {
     private final SocketChannel _client;
     private final Selector _selector;
     private final SocketChannel _proxy;
-    private HandlerState _state = HandlerState.WRITING;
+    private HandlerState _state = HandlerState.CONNECTING;
     private ByteBuffer _buffer = ByteBuffer.wrap(String
         .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", _remoteHost, _remotePort, _remoteHost)
         .getBytes());
+    private final long _connectStartTime;
 
     ProxySetupHandler(SocketChannel client, Selector selector)
         throws IOException {
@@ -206,11 +205,18 @@ public class Tunnel {
 
       //Blocking call
       _proxy = SocketChannel.open();
-      _proxy.socket().setTcpNoDelay(true);
-      _proxy.socket().connect(new InetSocketAddress(_proxyHost, _proxyPort), 5000);
-
       _proxy.configureBlocking(false);
-      _proxy.register(_selector, SelectionKey.OP_WRITE, this);
+      _connectStartTime = System.currentTimeMillis();
+      boolean connected = _proxy.connect(new InetSocketAddress(_proxyHost, _proxyPort));
+
+      if(!connected) {
+        _client.configureBlocking(false);
+        _client.register(_selector, SelectionKey.OP_READ, this);
+        _proxy.register(_selector, SelectionKey.OP_CONNECT, this);
+      } else {
+        _state = HandlerState.WRITING;
+        _proxy.register(_selector, SelectionKey.OP_WRITE, this);
+      }
     }
 
     @Override
@@ -219,6 +225,9 @@ public class Tunnel {
 
       try {
         switch (_state) {
+          case CONNECTING:
+            connect();
+            break;
           case WRITING:
             write();
             break;
@@ -232,6 +241,23 @@ public class Tunnel {
       }
 
       return _state;
+    }
+
+    private void connect() throws IOException{
+      if(_proxy.isOpen()) {
+
+        if (_proxy.finishConnect()) {
+          _proxy.register(_selector, SelectionKey.OP_WRITE, this);
+          SelectionKey clientKey = _client.keyFor(_selector);
+          if (clientKey != null) {
+            clientKey.cancel();
+          }
+          _state = HandlerState.WRITING;
+        } else if (_connectStartTime + PROXY_CONNECT_TIMEOUT < System.currentTimeMillis()) {
+          LOG.warn("Proxy connect timed out for client {}", _client);
+          closeChannels();
+        }
+      }
     }
 
     private void write() throws IOException{
@@ -285,7 +311,7 @@ public class Tunnel {
         try {
           _proxy.close();
         } catch (IOException log) {
-          //log
+          LOG.warn("Failed to close proxy channel {}",_proxy,log);
         }
       }
 
@@ -293,7 +319,7 @@ public class Tunnel {
         try {
           _client.close();
         } catch (IOException log) {
-          //log
+          LOG.warn("Failed to close client channel {}",_client,log);
         }
       }
     }
@@ -438,7 +464,7 @@ public class Tunnel {
         try {
           _proxy.close();
         } catch (IOException log) {
-          //log
+          LOG.warn("Failed to close proxy channel {}",_proxy,log);
         }
       }
 
@@ -446,7 +472,7 @@ public class Tunnel {
         try {
           _client.close();
         } catch (IOException log) {
-          //log
+          LOG.warn("Failed to close client channel {}",_client,log);
         }
       }
     }
