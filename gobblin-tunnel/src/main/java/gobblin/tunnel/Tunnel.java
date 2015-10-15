@@ -204,9 +204,10 @@ public class Tunnel {
       _client = client;
       _selector = selector;
 
+      //Blocking call
       _proxy = SocketChannel.open();
       _proxy.socket().setTcpNoDelay(true);
-      _proxy.socket().connect(new InetSocketAddress(_proxyHost,_proxyPort), 5000);
+      _proxy.socket().connect(new InetSocketAddress(_proxyHost, _proxyPort), 5000);
 
       _proxy.configureBlocking(false);
       _proxy.register(_selector, SelectionKey.OP_WRITE, this);
@@ -226,30 +227,14 @@ public class Tunnel {
             break;
         }
       }catch (IOException ioe){
-        //close channels
+        LOG.warn("Failed to establish a proxy connection for {}", _client, ioe);
+        closeChannels();
       }
 
       return _state;
     }
 
-    private void connect()
-        throws IOException {
-
-      if(_proxy.finishConnect()){
-        _proxy.register(_selector, SelectionKey.OP_WRITE, this);
-        _state = HandlerState.WRITING;
-        _buffer = ByteBuffer.wrap(String
-            .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", _remoteHost, _remotePort, _remoteHost)
-            .getBytes());
-      }
-      else {
-        _proxy.close();
-        _client.close();
-      }
-    }
-
     private void write() throws IOException{
-
       while(_proxy.write(_buffer)>0){
       }
 
@@ -258,7 +243,6 @@ public class Tunnel {
         _state = HandlerState.READING;
         _buffer = ByteBuffer.allocate(1000);
       }
-
     }
 
     private void read() throws IOException {
@@ -295,17 +279,35 @@ public class Tunnel {
         }
       }
     }
+
+    private void closeChannels() {
+      if (_proxy.isOpen()) {
+        try {
+          _proxy.close();
+        } catch (IOException log) {
+          //log
+        }
+      }
+
+      if (_client.isOpen()) {
+        try {
+          _client.close();
+        } catch (IOException log) {
+          //log
+        }
+      }
+    }
   }
 
   /**
    * This class is not thread safe
    */
-  final class ReadWriteHandler implements Callable<Boolean> {
+  final class ReadWriteHandler implements Callable<HandlerState> {
     private final SocketChannel _proxy;
     private final SocketChannel _client;
     private final Selector _selector;
     private final ByteBuffer _buffer = ByteBuffer.allocate(1000000);
-    private boolean reading = true;
+    private HandlerState _state = HandlerState.READING;
 
     ReadWriteHandler(SocketChannel proxy, SocketChannel client, Selector selector)
         throws IOException {
@@ -320,21 +322,24 @@ public class Tunnel {
     }
 
     @Override
-    public Boolean call()
+    public HandlerState call()
         throws Exception {
 
       try {
-        if (reading) {
-          read();
-        } else {
-          write();
+        switch (_state){
+          case READING:
+            read();
+            break;
+          case WRITING:
+            write();
+            break;
         }
       } catch (IOException ioe) {
         closeChannels();
         throw new IOException(String.format("Could not read/write between %s and %s", _proxy, _client), ioe);
       }
 
-      return reading;
+      return _state;
     }
 
     private void write()
@@ -378,7 +383,7 @@ public class Tunnel {
           else{
             writeChannel.close();
           }
-          reading = true;
+          _state = HandlerState.READING;
         } else {
           _buffer.compact();
         }
@@ -420,7 +425,7 @@ public class Tunnel {
         if (totalRead > 0) {
           readKey.cancel();
           writeChannel.register(_selector, SelectionKey.OP_WRITE, this);
-          reading = false;
+          _state = HandlerState.WRITING;
         }
         if (lastRead == -1) {
           readChannel.close();
