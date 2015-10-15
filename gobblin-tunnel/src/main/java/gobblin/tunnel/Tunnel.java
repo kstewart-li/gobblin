@@ -18,7 +18,6 @@ import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
-import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -100,15 +99,14 @@ public class Tunnel {
       try {
         _selector = Selector.open();
       } catch (IOException e) {
-        e.printStackTrace();
+        LOG.error("Could not open selector",e);
       }
     }
 
     @Override
     public void run() {
       try {
-        _server.configureBlocking(false);
-        _server.register(_selector, SelectionKey.OP_ACCEPT);
+        new AcceptHandler(_server,_selector);
 
         while (!Thread.interrupted()) {
 
@@ -129,142 +127,11 @@ public class Tunnel {
 
     private void dispatch(SelectionKey selectionKey)
         throws IOException {
-      if (selectionKey.isAcceptable()) {
-        acceptNewConnection(selectionKey);
-      } else if (selectionKey.isReadable() || selectionKey.isWritable()) {
-        ReadWriteHandler handler = (ReadWriteHandler) selectionKey.attachment();
-        try {
-          handler.call();
-        } catch (Exception e) {
-          LOG.warn("Failed to handle read/write event", e);
-        }
-      }
-    }
-
-    private void acceptNewConnection(SelectionKey selectionKey) {
-      SocketChannel client = null;
-
+      Callable<?> attachment = (Callable<?>) selectionKey.attachment();
       try {
-        client = ((ServerSocketChannel) selectionKey.channel()).accept();
-
-        LOG.info("Accepted connection from {}", client);
-
-        SocketChannel proxy = connect();
-        new ReadWriteHandler(proxy, client, _selector);
-      } catch (IOException io) {
-        if (client == null) {
-          LOG.warn("Failed to accept connection from client", io);
-        } else if (client.isOpen()) {
-          LOG.warn(String.format("Failed to connect to proxy dropping connection from %s", client), io);
-          try {
-            client.close();
-          } catch (IOException ignore) {
-          }
-        }
-      }
-    }
-  }
-
-  protected SocketChannel connect()
-      throws IOException {
-    final SocketChannel proxyChannel = requestConnectionToRemoteHost(_remoteHost, _remotePort, _proxyHost, _proxyPort);
-    final ByteBuffer statusLine = readVersionAndStatus(proxyChannel);
-
-    if (!OK_REPLIES.contains(statusLine)) {
-      System.out.println(String.format("Failed to connect to proxy server.  Response: %n%s",
-          new String(statusLine.array(), 0, OK_REPLY.limit())));
-
-      try {
-        proxyChannel.close();
-      } catch (IOException e) {
-        LOG.warn("failed to close connection to proxy", e);
-      }
-
-      throw new IOException(String.format("Failed to connect to proxy %s:%n%s", _remoteHost, _remotePort,
-          new String(statusLine.array(), 0, OK_REPLY.limit())));
-    }
-
-    drainChannel(proxyChannel);
-
-    return proxyChannel;
-  }
-
-  private ByteBuffer readVersionAndStatus(SocketChannel channel)
-      throws IOException {
-    final ByteBuffer reply = ByteBuffer.allocate(1024);
-
-    int soTimeout = channel.socket().getSoTimeout();
-    ReadableByteChannel channelWithTimeout = createChannelWithReadTimeout(channel, 5000);
-
-    try {
-      int read = channelWithTimeout.read(reply);
-      while (read > 0 && reply.position() < OK_REPLY.limit()) {
-        read = channelWithTimeout.read(reply);
-      }
-    } catch (SocketTimeoutException ste) {
-      System.out.println("Read from squid proxy timed out" + ste);
-    } finally {
-      channel.socket().setSoTimeout(soTimeout);
-    }
-
-    final ByteBuffer statusLine = reply.duplicate();
-    statusLine.flip();
-    statusLine.limit(OK_REPLY.limit());
-    return statusLine;
-  }
-
-  /**
-   * The socket channel does not respect the socket level soTimeout setting.  This method returns a channel which
-   * does respect the socket lever soTimeout setting
-   *
-   * @param channel whose socket will be read from
-   * @param readTimeout the timeout that the read operation will respect
-   * @return a channel which honors the read time out
-   * @throws IOException if an error occurs when accessing the socket input channel
-   */
-  private ReadableByteChannel createChannelWithReadTimeout(SocketChannel channel, long readTimeout)
-      throws IOException {
-    channel.socket().setSoTimeout((int) readTimeout);
-    return Channels.newChannel(channel.socket().getInputStream());
-  }
-
-  private SocketChannel requestConnectionToRemoteHost(String host, int port, String proxyHost, int proxyPort)
-      throws IOException {
-    final SocketChannel proxyChannel = SocketChannel.open();
-
-    if (proxyChannel == null) {
-      throw new IOException("unable to connect to " + host + ":" + port);
-    }
-
-    try {
-      proxyChannel.socket().setTcpNoDelay(true);
-      proxyChannel.socket().connect(new InetSocketAddress(proxyHost, proxyPort), 5000);
-
-      final ByteBuffer connect = ByteBuffer.wrap(String
-          .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", host, port, host)
-          .getBytes());
-
-      while (proxyChannel.write(connect) > 0) {
-      }
-    } catch (IOException e) {
-      try {
-        proxyChannel.close();
-      } catch (IOException ex) {
-        System.out.println(ex);
-      }
-      throw e;
-    }
-
-    return proxyChannel;
-  }
-
-  private void drainChannel(SocketChannel socketChannel)
-      throws IOException {
-    if (socketChannel.socket().getInputStream().available() > 0) {
-      final ByteBuffer ignored = ByteBuffer.allocate(1024);
-      while (socketChannel.socket().getInputStream().available() > 0) {
-        socketChannel.read(ignored);
-        ignored.clear();
+        attachment.call();
+      }catch (Exception e){
+        LOG.warn("exception handling event on {}",selectionKey.channel(), e);
       }
     }
   }
@@ -280,6 +147,152 @@ public class Tunnel {
         _server.close();
       } catch (IOException ioe) {
         LOG.warn("Failed to shutdown tunnel", ioe);
+      }
+    }
+  }
+
+  enum HandlerState {
+    ACCEPTING,
+    CONNECTING,
+    READING,
+    WRITING
+  }
+
+  final class AcceptHandler implements Callable<HandlerState> {
+
+    private final ServerSocketChannel _server;
+    private final Selector _selector;
+
+    AcceptHandler(ServerSocketChannel server, Selector selector)
+        throws IOException {
+
+      _server = server;
+      _selector = selector;
+
+      _server.configureBlocking(false);
+      _server.register(selector, SelectionKey.OP_ACCEPT, this);
+    }
+
+    @Override
+    public HandlerState call()
+        throws Exception {
+
+      SocketChannel client = _server.accept();
+      try{
+        new ProxySetupHandler(client, _selector);
+      } catch (IOException ioe){
+        client.close();
+      }
+
+      return HandlerState.ACCEPTING;
+    }
+  }
+
+
+  final class ProxySetupHandler implements  Callable<HandlerState> {
+    private final SocketChannel _client;
+    private final Selector _selector;
+    private final SocketChannel _proxy;
+    private HandlerState _state = HandlerState.WRITING;
+    private ByteBuffer _buffer = ByteBuffer.wrap(String
+        .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", _remoteHost, _remotePort, _remoteHost)
+        .getBytes());
+
+    ProxySetupHandler(SocketChannel client, Selector selector)
+        throws IOException {
+
+      _client = client;
+      _selector = selector;
+
+      _proxy = SocketChannel.open();
+      _proxy.socket().setTcpNoDelay(true);
+      _proxy.socket().connect(new InetSocketAddress(_proxyHost,_proxyPort), 5000);
+
+      _proxy.configureBlocking(false);
+      _proxy.register(_selector, SelectionKey.OP_WRITE, this);
+    }
+
+    @Override
+    public HandlerState call()
+        throws Exception {
+
+      try {
+        switch (_state) {
+          case WRITING:
+            write();
+            break;
+          case READING:
+            read();
+            break;
+        }
+      }catch (IOException ioe){
+        //close channels
+      }
+
+      return _state;
+    }
+
+    private void connect()
+        throws IOException {
+
+      if(_proxy.finishConnect()){
+        _proxy.register(_selector, SelectionKey.OP_WRITE, this);
+        _state = HandlerState.WRITING;
+        _buffer = ByteBuffer.wrap(String
+            .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", _remoteHost, _remotePort, _remoteHost)
+            .getBytes());
+      }
+      else {
+        _proxy.close();
+        _client.close();
+      }
+    }
+
+    private void write() throws IOException{
+
+      while(_proxy.write(_buffer)>0){
+      }
+
+      if(_buffer.remaining() == 0){
+        _proxy.register(_selector,SelectionKey.OP_READ,this);
+        _state = HandlerState.READING;
+        _buffer = ByteBuffer.allocate(1000);
+      }
+
+    }
+
+    private void read() throws IOException {
+      int lastBytes, totalBytes = 0;
+
+      while ((lastBytes = _proxy.read(_buffer))>0){
+        totalBytes +=lastBytes;
+      }
+
+      if(totalBytes >= OK_REPLY.limit()){
+        _buffer.flip();
+        _buffer.limit(OK_REPLY.limit());
+        if(OK_REPLIES.contains(_buffer)){
+          _proxy.keyFor(_selector).cancel();
+          _proxy.configureBlocking(true);
+          drainChannel(_proxy);
+          _state = null;
+
+          new ReadWriteHandler(_proxy,_client,_selector);
+        }
+        else{
+          _proxy.close();
+          _client.close();
+        }
+      }
+    }
+
+    private void drainChannel(SocketChannel socketChannel)
+        throws IOException {
+      if (socketChannel.socket().getInputStream().available() > 0) {
+        while (socketChannel.socket().getInputStream().available() > 0) {
+          socketChannel.read(_buffer);
+          _buffer.clear();
+        }
       }
     }
   }
@@ -303,7 +316,6 @@ public class Tunnel {
       _proxy.configureBlocking(false);
       _client.configureBlocking(false);
 
-      _proxy.register(_selector, OP_READ, this);
       _client.register(_selector, OP_READ, this);
     }
 
@@ -355,6 +367,8 @@ public class Tunnel {
           totalWrite += lastWrite;
         }
 
+        LOG.info("{} bytes written to {}", totalWrite, writeChannel == _proxy ? "proxy" : "client");
+
         if (totalWrite == available) {
           _buffer.clear();
           if(readChannel.isOpen()) {
@@ -400,6 +414,8 @@ public class Tunnel {
         while ((lastRead = readChannel.read(_buffer)) > 0) {
           totalRead += lastRead;
         }
+
+        LOG.info("{} bytes read from {}", totalRead, readChannel == _proxy ? "proxy":"client");
 
         if (totalRead > 0) {
           readKey.cancel();

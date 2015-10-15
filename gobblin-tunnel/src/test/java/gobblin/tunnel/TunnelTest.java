@@ -1,5 +1,7 @@
 package gobblin.tunnel;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
@@ -131,6 +133,19 @@ public class TunnelTest {
 
       fetchContent(tunnelPort);
     } finally {
+      tunnel.get().close();
+    }
+  }
+
+  @Test(enabled = false)
+  public void mustDownloadLargeFiles()
+      throws Exception {
+
+    Optional<Tunnel> tunnel = Tunnel.build("www.us.apache.org", 80, "localhost", 10926);
+    try {
+      IOUtils.copyLarge((InputStream) new URL("http://localhost:"+tunnel.get().getPort()+"/dist//httpcomponents/httpclient/binary/httpcomponents-client-4.5.1-bin.tar.gz")
+          .getContent(new Class[]{InputStream.class}), new FileOutputStream(new File("httpcomponents-client-4.5.1-bin.tar.gz")));
+    }finally {
       tunnel.get().close();
     }
   }
