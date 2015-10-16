@@ -17,14 +17,18 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.apache.commons.io.IOUtils;
-import org.mockserver.client.server.MockServerClient;
 import org.mockserver.integration.ClientAndServer;
 import org.mockserver.model.HttpForward;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.testng.annotations.AfterClass;
+import org.testng.annotations.AfterMethod;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeClass;
+import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
 import static org.testng.Assert.assertNotNull;
@@ -45,15 +49,16 @@ public class TunnelTest {
   public void startProxy()
       throws IOException {
     _mockServer = ClientAndServer.startClientAndServer(10926);
-    _mockServer.when(HttpRequest.request().withMethod("CONNECT")).respond(HttpResponse.response().withStatusCode(200));
-    _mockServer.when(HttpRequest.request().withMethod("GET").withPath("/"))
-        .respond(HttpResponse.response(IOUtils.toString(getClass().getResourceAsStream("/example.org.html"))));
-
   }
 
   @AfterClass
   public void stopProxy() {
     _mockServer.stop();
+  }
+
+  @AfterMethod
+  public void reset(){
+    _mockServer.reset();
   }
 
   @Test
@@ -72,13 +77,14 @@ public class TunnelTest {
   @Test
   public void mustHandleClientDisconnectingWithoutClosingTunnel()
       throws Exception {
+    mockExample();
     Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
 
     try {
       int tunnelPort = tunnel.get().getPort();
       SocketChannel client = SocketChannel.open();
 
-      assertTrue(client.connect(new InetSocketAddress("localhost", tunnelPort)));
+      client.connect(new InetSocketAddress("localhost", tunnelPort));
       client.write(ByteBuffer.wrap("GET / HTTP/1.1%nUser-Agent: GaaP%nConnection:keep - alive %n%n".getBytes()));
       client.close();
 
@@ -92,6 +98,7 @@ public class TunnelTest {
   public void mustHandleConnectionToExternalResource()
       throws Exception {
 
+    mockExample();
     Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
 
     try {
@@ -106,6 +113,7 @@ public class TunnelTest {
   @Test
   public void mustHandleMultipleConnections()
       throws Exception {
+    mockExample();
     Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
     int clients = 5;
 
@@ -162,21 +170,54 @@ public class TunnelTest {
     }
   }
 
+  @Test(expectedExceptions = SocketException.class)
+  public void mustRefuseConnectionWhenProxyRefuses() throws Exception{
+    _mockServer.when(HttpRequest.request().withMethod("CONNECT").withPath("www.us.apache.org:80"))
+        .respond(HttpResponse.response().withStatusCode(403));
+
+    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
+
+    try {
+      int tunnelPort = tunnel.get().getPort();
+
+      fetchContent(tunnelPort);
+    } finally {
+      tunnel.get().close();
+    }
+  }
+
+  @Test(expectedExceptions = SocketException.class)
+  public void mustRefuseConnectionWhenProxyTimesOut() throws Exception{
+    _mockServer.when(HttpRequest.request().withMethod("CONNECT").withPath("www.us.apache.org:80"))
+        .respond(HttpResponse.response().withDelay(TimeUnit.SECONDS,2).withStatusCode(200));
+
+    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
+
+    try {
+      int tunnelPort = tunnel.get().getPort();
+
+      fetchContent(tunnelPort);
+    } finally {
+      tunnel.get().close();
+    }
+  }
+
   @Test(enabled = false)
   public void mustDownloadLargeFiles()
       throws Exception {
 
+    _mockServer.when(HttpRequest.request().withMethod("CONNECT").withPath("www.us.apache.org:80"))
+        .respond(HttpResponse.response().withStatusCode(200));
     _mockServer.when(HttpRequest.request().withMethod("GET")
         .withPath("/dist//httpcomponents/httpclient/binary/httpcomponents-client-4.5.1-bin.tar.gz"))
         .forward(HttpForward.forward().withHost("www.us.apache.org").withPort(80));
-
 
     Optional<Tunnel> tunnel = Tunnel.build("www.us.apache.org", 80, "localhost", 10926);
     try {
       IOUtils.copyLarge((InputStream) new URL("http://localhost:" + tunnel.get().getPort()
               + "/dist//httpcomponents/httpclient/binary/httpcomponents-client-4.5.1-bin.tar.gz")
               .getContent(new Class[]{InputStream.class}),
-          new FileOutputStream(new File("httpcomponents-client-4.5.1-bin.tar.gz")));
+          new FileOutputStream(File.createTempFile("httpcomponents-client-4.5.1-bin", "tar.gz")));
     } finally {
       tunnel.get().close();
     }
@@ -188,4 +229,13 @@ public class TunnelTest {
         .getContent(new Class[]{InputStream.class});
     return IOUtils.toString(content);
   }
+
+  private void mockExample()
+      throws IOException {
+    _mockServer.when(HttpRequest.request().withMethod("CONNECT").withPath("example.org:80"))
+        .respond(HttpResponse.response().withStatusCode(200));
+    _mockServer.when(HttpRequest.request().withMethod("GET").withPath("/"))
+        .respond(HttpResponse.response(IOUtils.toString(getClass().getResourceAsStream("/example.org.html"))));
+  }
+
 }
