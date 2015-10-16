@@ -46,13 +46,10 @@ public class JdbcProvider extends BasicDataSource {
     if(proxyHost != null && proxyPort > 0) {
       String remoteHost="";
       int remotePort = 0;
-      try {
-        URI uri = new URI(connectionUrl);
-        remoteHost = uri.getHost();
-        remotePort = uri.getPort();
-      } catch (URISyntaxException e) {
-        e.printStackTrace();
-      }
+        int hostStart = connectionUrl.indexOf("://") + 3;
+        int portStart =  connectionUrl.indexOf(":", hostStart);
+        remoteHost = connectionUrl.substring(hostStart, portStart);
+        remotePort = Integer.decode(connectionUrl.substring(portStart + 1, connectionUrl.indexOf("/", portStart)));
       int tunnelPort = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort).get().getPort();
 
       //mangle connectionUrl, replace hostname with localhost -- hopefully the hostname is not needed!!!
