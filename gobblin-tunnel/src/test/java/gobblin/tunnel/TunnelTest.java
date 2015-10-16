@@ -20,6 +20,7 @@ import java.util.concurrent.Future;
 import org.apache.commons.io.IOUtils;
 import org.mockserver.client.server.MockServerClient;
 import org.mockserver.integration.ClientAndServer;
+import org.mockserver.model.HttpForward;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.testng.annotations.AfterClass;
@@ -38,27 +39,21 @@ import static org.testng.Assert.assertTrue;
  */
 public class TunnelTest {
 
-  private ClientAndServer _clientAndServer;
+  private ClientAndServer _mockServer;
 
   @BeforeClass
   public void startProxy()
       throws IOException {
-    _clientAndServer = ClientAndServer.startClientAndServer(10926);
-    MockServerClient mockServer = new MockServerClient("localhost", 10926);
-    mockServer.when(HttpRequest.request().withMethod("CONNECT")).respond(HttpResponse.response().withStatusCode(200));
-    InputStream resourceAsStream = getClass().getResourceAsStream("/example.org.html");
+    _mockServer = ClientAndServer.startClientAndServer(10926);
+    _mockServer.when(HttpRequest.request().withMethod("CONNECT")).respond(HttpResponse.response().withStatusCode(200));
+    _mockServer.when(HttpRequest.request().withMethod("GET").withPath("/"))
+        .respond(HttpResponse.response(IOUtils.toString(getClass().getResourceAsStream("/example.org.html"))));
 
-    if(resourceAsStream == null){
-      System.out.println("resourceAsStream = " + resourceAsStream);
-    }
-
-    mockServer.when(HttpRequest.request().withMethod("GET").withPath("/"))
-        .respond(HttpResponse.response(IOUtils.toString(resourceAsStream)));
   }
 
   @AfterClass
   public void stopProxy() {
-    _clientAndServer.stop();
+    _mockServer.stop();
   }
 
   @Test
@@ -171,11 +166,16 @@ public class TunnelTest {
   public void mustDownloadLargeFiles()
       throws Exception {
 
+    _mockServer.when(HttpRequest.request().withMethod("GET")
+        .withPath("/dist//httpcomponents/httpclient/binary/httpcomponents-client-4.5.1-bin.tar.gz"))
+        .forward(HttpForward.forward().withHost("www.us.apache.org").withPort(80));
+
+
     Optional<Tunnel> tunnel = Tunnel.build("www.us.apache.org", 80, "localhost", 10926);
     try {
       IOUtils.copyLarge((InputStream) new URL("http://localhost:" + tunnel.get().getPort()
-          + "/dist//httpcomponents/httpclient/binary/httpcomponents-client-4.5.1-bin.tar.gz")
-          .getContent(new Class[]{InputStream.class}),
+              + "/dist//httpcomponents/httpclient/binary/httpcomponents-client-4.5.1-bin.tar.gz")
+              .getContent(new Class[]{InputStream.class}),
           new FileOutputStream(new File("httpcomponents-client-4.5.1-bin.tar.gz")));
     } finally {
       tunnel.get().close();
