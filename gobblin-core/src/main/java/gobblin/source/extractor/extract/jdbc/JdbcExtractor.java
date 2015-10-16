@@ -712,7 +712,8 @@ public abstract class JdbcExtractor extends QueryBasedExtractor<JsonArray, JsonE
     String connectionUrl = this.getConnectionUrl();
 
     String proxyHost = this.workUnit.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL);
-    int proxyPort = this.workUnit.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT);
+    int proxyPort = this.workUnit.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT) != null ?
+        this.workUnit.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT) : -1;
 
     if (this.jdbcSource == null || this.jdbcSource.isClosed()) {
       this.jdbcSource = new JdbcProvider(driver, connectionUrl, userName, password, 1, this.getTimeOut(),"DEFAULT", proxyHost, proxyPort);

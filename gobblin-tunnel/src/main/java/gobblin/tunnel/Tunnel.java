@@ -195,7 +195,7 @@ public class Tunnel {
     private final SocketChannel _proxy;
     private HandlerState _state = HandlerState.CONNECTING;
     private ByteBuffer _buffer = ByteBuffer.wrap(String
-        .format("CONNECT %s:%s HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost:%s%n%n", _remoteHost, _remotePort, _remoteHost)
+        .format("CONNECT %s:%d HTTP/1.1%nUser-Agent: GaaP%nConnection: keep-alive%nHost: %s:%d%n%n", _remoteHost, _remotePort, _remoteHost, _remotePort)
         .getBytes());
     private final long _connectStartTime;
 

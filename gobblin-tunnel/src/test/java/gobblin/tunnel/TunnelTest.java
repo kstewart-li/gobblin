@@ -36,16 +36,17 @@ import static org.testng.Assert.assertTrue;
  * Tests tunneling through an http proxy.
  *
  * In order to execute these tests an http proxy must be running on localhost
- * and listening on port 10926
+ * and listening on port 10928
  */
 public class TunnelTest {
 
   private ClientAndServer _mockServer;
+  public static final int PORT = 10928;
 
   @BeforeClass
   public void startProxy()
       throws IOException {
-    _mockServer = ClientAndServer.startClientAndServer(10926);
+    _mockServer = ClientAndServer.startClientAndServer(PORT);
   }
 
   @AfterClass
@@ -61,7 +62,7 @@ public class TunnelTest {
   @Test
   public void mustBuildTunnelAndStartAcceptingConnections()
       throws Exception {
-    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
+    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", PORT);
 
     try {
       int tunnelPort = tunnel.get().getPort();
@@ -75,7 +76,7 @@ public class TunnelTest {
   public void mustHandleClientDisconnectingWithoutClosingTunnel()
       throws Exception {
     mockExample();
-    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
+    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", PORT);
 
     try {
       int tunnelPort = tunnel.get().getPort();
@@ -96,7 +97,7 @@ public class TunnelTest {
       throws Exception {
 
     mockExample();
-    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
+    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", PORT);
 
     try {
       String content = fetchContent(tunnel.get().getPort());
@@ -111,7 +112,7 @@ public class TunnelTest {
   public void mustHandleMultipleConnections()
       throws Exception {
     mockExample();
-    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
+    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", PORT);
     int clients = 5;
 
     final CountDownLatch startSignal = new CountDownLatch(1);
@@ -172,7 +173,7 @@ public class TunnelTest {
     _mockServer.when(HttpRequest.request().withMethod("CONNECT").withPath("www.us.apache.org:80"))
         .respond(HttpResponse.response().withStatusCode(403));
 
-    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
+    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", PORT);
 
     try {
       int tunnelPort = tunnel.get().getPort();
@@ -188,7 +189,7 @@ public class TunnelTest {
     _mockServer.when(HttpRequest.request().withMethod("CONNECT").withPath("www.us.apache.org:80"))
         .respond(HttpResponse.response().withDelay(TimeUnit.SECONDS,2).withStatusCode(200));
 
-    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", 10926);
+    Optional<Tunnel> tunnel = Tunnel.build("example.org", 80, "localhost", PORT);
 
     try {
       int tunnelPort = tunnel.get().getPort();
@@ -209,7 +210,7 @@ public class TunnelTest {
         .withPath("/dist//httpcomponents/httpclient/binary/httpcomponents-client-4.5.1-bin.tar.gz"))
         .forward(HttpForward.forward().withHost("www.us.apache.org").withPort(80));
 
-    Optional<Tunnel> tunnel = Tunnel.build("www.us.apache.org", 80, "localhost", 10926);
+    Optional<Tunnel> tunnel = Tunnel.build("www.us.apache.org", 80, "localhost", PORT);
     try {
       IOUtils.copyLarge((InputStream) new URL("http://localhost:" + tunnel.get().getPort()
               + "/dist//httpcomponents/httpclient/binary/httpcomponents-client-4.5.1-bin.tar.gz")

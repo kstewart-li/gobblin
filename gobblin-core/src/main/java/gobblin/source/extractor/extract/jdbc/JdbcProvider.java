@@ -46,14 +46,17 @@ public class JdbcProvider extends BasicDataSource {
     if(proxyHost != null && proxyPort > 0) {
       String remoteHost="";
       int remotePort = 0;
-        int hostStart = connectionUrl.indexOf("://") + 3;
-        int portStart =  connectionUrl.indexOf(":", hostStart);
-        remoteHost = connectionUrl.substring(hostStart, portStart);
-        remotePort = Integer.decode(connectionUrl.substring(portStart + 1, connectionUrl.indexOf("/", portStart)));
+      // TODO make connection Url parsing much more robust -- some connections URLs can have colons and slashes in the
+      // weirdest places
+      int hostStart = connectionUrl.indexOf("://") + 3;
+      int portStart =  connectionUrl.indexOf(":", hostStart);
+      remoteHost = connectionUrl.substring(hostStart, portStart);
+      remotePort = Integer.decode(connectionUrl.substring(portStart + 1, connectionUrl.indexOf("/", portStart)));
       int tunnelPort = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort).get().getPort();
 
       //mangle connectionUrl, replace hostname with localhost -- hopefully the hostname is not needed!!!
-      String newConnectionUrl = connectionUrl.replaceFirst(remoteHost, proxyHost).replaceFirst(":"+ remotePort, ":" + proxyPort);
+      String newConnectionUrl = connectionUrl.replaceFirst(remoteHost, "127.0.0.1")
+          .replaceFirst(":"+ remotePort, ":" + tunnelPort);
       System.out.println("*********** mangled " + connectionUrl + " to " + newConnectionUrl);
       connectionUrl = newConnectionUrl;
     }
