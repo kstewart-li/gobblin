@@ -53,7 +53,7 @@ public class JdbcProvider extends BasicDataSource {
       int tunnelPort = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort).get().getPort();
 
       //mangle connectionUrl, replace hostname with localhost -- hopefully the hostname is not needed!!!
-      String newConnectionUrl = connectionUrl.replaceFirst(remoteHost, proxyHost).replaceFirst(":"+ remotePort, ":" + proxyPort);
+      String newConnectionUrl = connectionUrl.replaceFirst(remoteHost, "localhost").replaceFirst(":"+ remotePort, ":" + proxyPort);
       System.out.println("*********** mangled " + connectionUrl + " to " + newConnectionUrl);
       connectionUrl = newConnectionUrl;
     }
