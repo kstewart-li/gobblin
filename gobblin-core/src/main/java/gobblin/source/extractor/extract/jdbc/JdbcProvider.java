@@ -15,6 +15,9 @@ package gobblin.source.extractor.extract.jdbc;
 import gobblin.tunnel.Tunnel;
 import org.apache.commons.dbcp.BasicDataSource;
 
+import java.net.URI;
+import java.net.URISyntaxException;
+
 
 /**
  * Create JDBC data source
@@ -33,20 +36,30 @@ public class JdbcProvider extends BasicDataSource {
   }
 
   public JdbcProvider(String driver, String connectionUrl, String user, String password, int numconn, int timeout,
-      String type, String proxyHost, int proxyPort){
-
+      String type, String proxyHost, int proxyPort) {
+    this.connect(driver, connectionUrl, user, password, numconn, timeout, type, proxyHost, proxyPort);
   }
 
   public void connect(String driver, String connectionUrl, String user, String password, int numconn, int timeout,
       String type, String proxyHost, int proxyPort) {
 
-    //TODO setup the tunnel
-    if(proxyHost != null && proxyPort > 0){
+    if(proxyHost != null && proxyPort > 0) {
       String remoteHost="";
       int remotePort = 0;
+      try {
+        URI uri = new URI(connectionUrl);
+        remoteHost = uri.getHost();
+        remotePort = uri.getPort();
+      } catch (URISyntaxException e) {
+        e.printStackTrace();
+      }
       int tunnelPort = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort).get().getPort();
-    }
 
+      //mangle connectionUrl, replace hostname with localhost -- hopefully the hostname is not needed!!!
+      String newConnectionUrl = connectionUrl.replaceFirst(remoteHost, proxyHost).replaceFirst(":"+ remotePort, ":" + proxyPort);
+      System.out.println("*********** mangled " + connectionUrl + " to " + newConnectionUrl);
+      connectionUrl = newConnectionUrl;
+    }
 
     this.setDriverClassName(driver);
     this.setUsername(user);
