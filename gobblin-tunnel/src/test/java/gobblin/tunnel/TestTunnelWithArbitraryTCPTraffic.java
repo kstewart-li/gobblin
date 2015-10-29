@@ -26,6 +26,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 
 
 @Test
@@ -319,7 +320,6 @@ public class TestTunnelWithArbitraryTCPTraffic {
     }.start();
   }
 
-  // Disabled because this needs to be fixed
   @Test(timeOut = 5000)
   public void testTunnelToEchoServerThatRespondsFirst() throws IOException {
     MockServer proxyServer = startConnectProxyServer(false);
@@ -420,7 +420,6 @@ public class TestTunnelWithArbitraryTCPTraffic {
       String response2 = readFromSocket(client);
       System.out.println(response2);
 
-
       client.close();
 
       assertEquals(response0, "Hello\n");
@@ -433,17 +432,86 @@ public class TestTunnelWithArbitraryTCPTraffic {
     }
   }
 
+  @Test(expectedExceptions = IOException.class)
+  public void testTunnelWhereProxyConnectionToServerFailsWithWriteFirstClient() throws IOException {
+    MockServer proxyServer = startConnectProxyServer(false);
+    final int nonExistentPort = 54321;
+    Optional<Tunnel> tunnel = Tunnel.build("localhost", nonExistentPort, "localhost", proxyServer.getServerSocketPort());
+    try {
+      int tunnelPort = tunnel.get().getPort();
+      SocketChannel client = SocketChannel.open();
+
+      client.configureBlocking(true);
+      client.connect(new InetSocketAddress("localhost", tunnelPort));
+      client.write(ByteBuffer.wrap("Knock\n".getBytes()));
+      String response1 = readFromSocket(client);
+      System.out.println(response1);
+
+      client.close();
+
+    } finally {
+      proxyServer.stopServer();
+      tunnel.get().close();
+    }
+  }
+
+  // Disabled, as this test will not pass because there is no way to tell if remote peer closed connection without
+  // writing data to it. A client that reads first will wait indefinitely even after the tunnel closes its connection,
+  // unless it configures a timeout on the socket. This could be a problem when the remote provider is down or
+  // non-existent. If we cannot make this test pass, we can delete it
+  @Test(enabled = false, timeOut = 5000, expectedExceptions = IOException.class)
+  public void testTunnelWhereProxyConnectionToServerFailsWithReadFirstClient() throws IOException, InterruptedException {
+    MockServer proxyServer = startConnectProxyServer(false);
+    final int nonExistentPort = 54321;
+    Optional<Tunnel> tunnel = Tunnel.build("localhost", nonExistentPort, "localhost", proxyServer.getServerSocketPort());
+    try {
+      int tunnelPort = tunnel.get().getPort();
+      SocketChannel client = SocketChannel.open();
+
+      client.configureBlocking(true);
+      client.connect(new InetSocketAddress("localhost", tunnelPort));
+      while(true) {
+        String response1 = readFromSocket(client);
+        System.out.println("Response = " + response1);
+        Thread.sleep(1000);
+      }
+    } finally {
+      proxyServer.stopServer();
+      tunnel.get().close();
+    }
+  }
+
+  // This test will not pass for the same reason as above
   @Test
   public void testTunnelWhereServerClosesConnection() {
-
   }
 
-  @Test
-  public void testTunnelWhereClientClosesConnection() {
-  }
+  @Test(timeOut = 5000)
+  public void testTunnelThreadDeadAfterClose() throws IOException, InterruptedException {
+    MockServer proxyServer = startConnectProxyServer(false);
+    MockServer talkFirstEchoServer = startTalkFirstEchoServer();
+    Optional<Tunnel> tunnel = Tunnel.build("localhost", talkFirstEchoServer.getServerSocketPort(),
+        "localhost", proxyServer.getServerSocketPort());
 
-  @Test
-  public void testTunnelWhereProxyConnectionToServerFails() {
+    try {
+      int tunnelPort = tunnel.get().getPort();
+      SocketChannel client = SocketChannel.open();
+
+      client.connect(new InetSocketAddress("localhost", tunnelPort));
+      String response0 = readFromSocket(client);
+      System.out.println(response0);
+
+      client.write(ByteBuffer.wrap("Knock\n".getBytes()));
+      // don't wait for response
+      client.close();
+
+      assertEquals(response0, "Hello\n");
+    } finally {
+      talkFirstEchoServer.stopServer();
+      proxyServer.stopServer();
+      tunnel.get().close();
+      assertFalse(tunnel.get().isTunnelThreadAlive());
+    }
   }
 
   /**

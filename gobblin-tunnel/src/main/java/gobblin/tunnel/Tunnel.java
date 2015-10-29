@@ -92,6 +92,10 @@ public class Tunnel {
     _thread.start();
   }
 
+  public boolean isTunnelThreadAlive() {
+    return (_thread != null && _thread.isAlive());
+  }
+
   // needed for testing
   void simulateDelayBetweenConnectWriteAndRead(boolean b) {
     _simulateDelayBetweenConnectWriteAndRead = b;
@@ -306,8 +310,7 @@ public class Tunnel {
           drainProxyResponse(true);
         }
         else{
-          _proxy.close();
-          _client.close();
+          closeChannels();
         }
       }
     }
