@@ -1,4 +1,7 @@
 package gobblin.tunnel;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
 import org.mockserver.integration.ClientAndProxy;
 import org.mortbay.jetty.Server;
 import org.testng.annotations.Test;
@@ -282,6 +285,30 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
   @Test
   public void testTunnelWhereProxyConnectionToServerFails() {
+  }
+
+  /**
+   * This test demonstrates connecting to a mysql DB through
+   * and http proxy tunnel to a public data set of genetic data
+   * http://www.ensembl.org/info/data/mysql.html
+   *
+   * @throws Exception
+   */
+  @Test
+  public void accessEnsembleDB() throws Exception{
+
+    Optional<Tunnel> tunnel = Tunnel.build("useastdb.ensembl.org", 5306, "localhost", PORT);
+    int port = tunnel.get().getPort();
+
+    Connection connection = DriverManager.getConnection("jdbc:mysql://localhost:"+port+"/homo_sapiens_core_82_38?user=anonymous");
+    String query2 = "SELECT DISTINCT gene_id, biotype, source, description from gene LIMIT 100";
+    ResultSet resultSet = connection.createStatement().executeQuery(query2);
+
+    while (resultSet.next()) {
+      System.out.println(String
+          .format("%s|%s|%s|%s", resultSet.getString(1), resultSet.getString(2), resultSet.getString(3),
+              resultSet.getString(4)));
+    }
   }
 
 }
