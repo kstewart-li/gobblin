@@ -13,6 +13,7 @@ package gobblin.tunnel;
 
 import com.google.common.collect.Sets;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
@@ -47,6 +48,8 @@ public class Tunnel {
   private static final ByteBuffer OK_REPLY = ByteBuffer.wrap("HTTP/1.1 200".getBytes());
   private static final Set<ByteBuffer> OK_REPLIES =
       Sets.newHashSet(OK_REPLY, ByteBuffer.wrap("HTTP/1.0 200".getBytes()));
+
+  private boolean _simulateDelayBetweenConnectWriteAndRead = false;
 
   private Tunnel(String remoteHost, int remotePort, String proxyHost, int proxyPort) {
     _remoteHost = remoteHost;
@@ -87,6 +90,11 @@ public class Tunnel {
   private void startTunnelThread() {
     _thread = new Thread(new Dispatcher(), "Tunnel Listener");
     _thread.start();
+  }
+
+  // needed for testing
+  void simulateDelayBetweenConnectWriteAndRead(boolean b) {
+    _simulateDelayBetweenConnectWriteAndRead = b;
   }
 
   private class Dispatcher implements Runnable {
@@ -153,6 +161,7 @@ public class Tunnel {
     ACCEPTING,
     CONNECTING,
     READING,
+    DRAINING,
     WRITING
   }
 
@@ -189,7 +198,7 @@ public class Tunnel {
   }
 
 
-  final class ProxySetupHandler implements  Callable<HandlerState> {
+  final class ProxySetupHandler implements Callable<HandlerState> {
     private final SocketChannel _client;
     private final Selector _selector;
     private final SocketChannel _proxy;
@@ -236,6 +245,9 @@ public class Tunnel {
           case READING:
             read();
             break;
+          case DRAINING:
+            drainProxyResponse(false);
+            break;
         }
       }catch (IOException ioe){
         LOG.warn("Failed to establish a proxy connection for {}", _client.getRemoteAddress(), ioe);
@@ -269,7 +281,14 @@ public class Tunnel {
       if(_buffer.remaining() == 0){
         _proxy.register(_selector,SelectionKey.OP_READ,this);
         _state = HandlerState.READING;
-        _buffer = ByteBuffer.allocate(1000);
+        _buffer = ByteBuffer.allocate(256);
+        // for testing
+        if (_simulateDelayBetweenConnectWriteAndRead) {
+          try {
+            Thread.sleep(5);
+          } catch (InterruptedException e) {
+          }
+        }
       }
     }
 
@@ -282,11 +301,9 @@ public class Tunnel {
 
       if(totalBytes >= OK_REPLY.limit()){
         _buffer.flip();
-        _buffer.limit(OK_REPLY.limit());
-        if(OK_REPLIES.contains(_buffer)){
-          _state = null;
-
-          new ReadWriteHandler(_proxy,_client,_selector);
+        if(OK_REPLIES.contains(ByteBuffer.wrap(_buffer.array(), 0, OK_REPLY.limit()))){
+          _state = HandlerState.DRAINING;
+          drainProxyResponse(true);
         }
         else{
           _proxy.close();
@@ -295,13 +312,28 @@ public class Tunnel {
       }
     }
 
-    private void drainChannel(SocketChannel socketChannel)
+    private void drainProxyResponse(boolean firstDrain)
         throws IOException {
-      if (socketChannel.socket().getInputStream().available() > 0) {
-        while (socketChannel.socket().getInputStream().available() > 0) {
-          socketChannel.read(_buffer);
-          _buffer.clear();
+      if (!firstDrain) {
+        // this is needed in case we don't get the entire proxy response in one read call for whatever reason
+        _buffer.clear();
+        while (_proxy.read(_buffer) > 0) {}
+        _buffer.flip();
+      }
+      // 2 consecutive CRLFs signify the end of an HTTP message (some proxies return newlines instead of CRLFs)
+      byte [] temp = _buffer.array();
+      int i = _buffer.position();
+      while (i <= (_buffer.limit() - 4)) {
+        if (((temp[i] == '\n') && (temp[i + 1] == '\n'))
+            || ((temp[i + 1] == '\n') && (temp[i + 2] == '\n'))
+            || ((temp[i + 2] == '\n') && (temp[i + 3] == '\n'))
+            || ((temp[i] == '\r') && (temp[i + 1] == '\n') && (temp[i + 2] == '\r') && (temp[i + 3] == '\n'))) {
+          _state = null;
+          _buffer.position(i + 4);
+          new ReadWriteHandler(_proxy, _buffer, _client, _selector);
+          return;
         }
+        i++;
       }
     }
 
@@ -334,12 +366,20 @@ public class Tunnel {
     private final ByteBuffer _buffer = ByteBuffer.allocate(1000000);
     private HandlerState _state = HandlerState.READING;
 
-    ReadWriteHandler(SocketChannel proxy, SocketChannel client, Selector selector)
+    ReadWriteHandler(SocketChannel proxy, ByteBuffer mixedServerResponseBuffer, SocketChannel client, Selector selector)
         throws IOException {
       _proxy = proxy;
       _client = client;
       _selector = selector;
 
+      // drain response that is not part of proxy's 200 OK and is part of data pushed from server, and push to client
+      if (mixedServerResponseBuffer.limit() > mixedServerResponseBuffer.position()) {
+        _client.configureBlocking(true);
+        OutputStream clientOut = _client.socket().getOutputStream();
+        clientOut.write(mixedServerResponseBuffer.array(), mixedServerResponseBuffer.position(),
+            mixedServerResponseBuffer.limit() - mixedServerResponseBuffer.position());
+        clientOut.flush();
+      }
       _proxy.configureBlocking(false);
       _client.configureBlocking(false);
 
