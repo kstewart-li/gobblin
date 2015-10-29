@@ -1,4 +1,5 @@
 package gobblin.tunnel;
+import org.mockserver.integration.ClientAndProxy;
 import org.mortbay.jetty.Server;
 import org.testng.annotations.Test;
 
@@ -51,7 +52,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
   private abstract class MockServer implements Runnable {
     volatile boolean _serverRunning = true;
     ServerSocket _server;
-    Set<Thread> _threads = Collections.synchronizedSet(new HashSet<>());
+    Set<Thread> _threads = Collections.synchronizedSet(new HashSet<Thread>());
 
     public MockServer start() throws IOException {
       _server = new ServerSocket();
@@ -68,6 +69,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
         try {
           final Socket clientSocket = _server.accept();
           clientSocket.setSoTimeout(5000);
+          System.out.println("Accepted connection");
           // client handler thread
           Thread thread = new Thread() {
             @Override
@@ -136,6 +138,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
   private String readFromSocket(SocketChannel client) throws IOException {
     ByteBuffer readBuf = ByteBuffer.allocate(256);
+    System.out.println("Reading from socket");
     client.read(readBuf);
     readBuf.flip();
     return StandardCharsets.US_ASCII.decode(readBuf).toString();
@@ -215,9 +218,12 @@ public class TestTunnelWithArbitraryTCPTraffic {
     return new MockServer() {
       @Override
       void handleClientSocket(Socket clientSocket) throws IOException {
+        System.out.println("Writting to client");
+
         BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
         PrintWriter out = new PrintWriter(clientSocket.getOutputStream());
         out.println("Hello\n");
+        out.flush();
 
         String line = in.readLine();
         while (line != null && isServerRunning()) {
@@ -231,7 +237,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
   }
 
   // Disabled because this needs to be fixed
-  @Test(timeOut = 5000, enabled = false)
+  @Test(enabled = true)
   public void testTunnelToEchoServerThatRespondsFirst() throws IOException {
     MockServer talkFirstEchoServer = startTalkFirstEchoServer();
     Optional<Tunnel> tunnel = Tunnel.build("localhost", talkFirstEchoServer.getServerSocketPort(), "localhost", PORT);
@@ -242,16 +248,21 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
       client.connect(new InetSocketAddress("localhost", tunnelPort));
       String response0 = readFromSocket(client);
+      System.out.println(response0);
 
       client.write(ByteBuffer.wrap("Knock\n".getBytes()));
       String response1 = readFromSocket(client);
+      System.out.println(response1);
+
 
       client.write(ByteBuffer.wrap("Hello\n".getBytes()));
       String response2 = readFromSocket(client);
+      System.out.println(response2);
+
 
       client.close();
 
-      assertEquals(response0, "Hello\n");
+      assertEquals(response0, "Hello\n\n");
       assertEquals(response1, "Knock Knock\n");
       assertEquals(response2, "Hello Hello\n");
     } finally {
