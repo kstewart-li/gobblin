@@ -284,9 +284,6 @@ public class Tunnel {
         _buffer.flip();
         _buffer.limit(OK_REPLY.limit());
         if(OK_REPLIES.contains(_buffer)){
-          _proxy.keyFor(_selector).cancel();
-          _proxy.configureBlocking(true);
-          drainChannel(_proxy);
           _state = null;
 
           new ReadWriteHandler(_proxy,_client,_selector);
@@ -347,6 +344,7 @@ public class Tunnel {
       _client.configureBlocking(false);
 
       _client.register(_selector, OP_READ, this);
+      _proxy.register(_selector, OP_READ, this);
     }
 
     @Override
