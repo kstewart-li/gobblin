@@ -2,6 +2,7 @@ package gobblin.tunnel;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.util.concurrent.TimeUnit;
 import org.mockserver.integration.ClientAndProxy;
 import org.mortbay.jetty.Server;
 import org.testng.annotations.Test;
@@ -22,6 +23,8 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
+
 
 /**
  * Due to the lack of a suitable embeddable proxy server (MockServer tries to SSL-enable all CONNECT-initiated traffic
@@ -294,20 +297,34 @@ public class TestTunnelWithArbitraryTCPTraffic {
    *
    * @throws Exception
    */
-  @Test
+  @Test(timeOut = 5000)
   public void accessEnsembleDB() throws Exception{
 
     Optional<Tunnel> tunnel = Tunnel.build("useastdb.ensembl.org", 5306, "localhost", PORT);
-    int port = tunnel.get().getPort();
 
-    Connection connection = DriverManager.getConnection("jdbc:mysql://localhost:"+port+"/homo_sapiens_core_82_38?user=anonymous");
-    String query2 = "SELECT DISTINCT gene_id, biotype, source, description from gene LIMIT 100";
-    ResultSet resultSet = connection.createStatement().executeQuery(query2);
+    try {
+      int port = tunnel.get().getPort();
 
-    while (resultSet.next()) {
-      System.out.println(String
-          .format("%s|%s|%s|%s", resultSet.getString(1), resultSet.getString(2), resultSet.getString(3),
-              resultSet.getString(4)));
+      Connection connection =
+          DriverManager.getConnection("jdbc:mysql://localhost:" + port + "/homo_sapiens_core_82_38?user=anonymous");
+      String query2 = "SELECT DISTINCT gene_id, biotype, source, description from gene LIMIT 1000";
+
+      ResultSet resultSet = connection.createStatement().executeQuery(query2);
+
+      int row = 0;
+
+      while (resultSet.next()) {
+        row++;
+        System.out
+            .printf("%s|%s|%s|%s|%s%n", row, resultSet.getString(1), resultSet.getString(2), resultSet.getString(3),
+                resultSet.getString(4));
+
+      }
+
+      assertEquals(row, 1000);
+    }
+    finally {
+      tunnel.get().close();
     }
   }
 
