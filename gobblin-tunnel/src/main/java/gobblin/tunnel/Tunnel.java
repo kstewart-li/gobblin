@@ -37,7 +37,7 @@ import static java.nio.channels.SelectionKey.OP_READ;
 public class Tunnel {
 
   private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(Tunnel.class);
-  public static final int PROXY_CONNECT_TIMEOUT = 1000;
+  public static final int PROXY_CONNECT_TIMEOUT_MS = 5000;
 
   private final String _remoteHost;
   private final int _remotePort;
@@ -271,7 +271,7 @@ public class Tunnel {
             clientKey.cancel();
           }
           _state = HandlerState.WRITING;
-        } else if (_connectStartTime + PROXY_CONNECT_TIMEOUT < System.currentTimeMillis()) {
+        } else if (_connectStartTime + PROXY_CONNECT_TIMEOUT_MS < System.currentTimeMillis()) {
           LOG.warn("Proxy connect timed out for client {}", _client);
           closeChannels();
         }
@@ -441,7 +441,7 @@ public class Tunnel {
           totalWrite += lastWrite;
         }
 
-        LOG.info("{} bytes written to {}", totalWrite, writeChannel == _proxy ? "proxy" : "client");
+        LOG.debug("{} bytes written to {}", totalWrite, writeChannel == _proxy ? "proxy" : "client");
 
         if (totalWrite == available) {
           _buffer.clear();
@@ -489,7 +489,7 @@ public class Tunnel {
           totalRead += lastRead;
         }
 
-        LOG.info("{} bytes read from {}", totalRead, readChannel == _proxy ? "proxy":"client");
+        LOG.debug("{} bytes read from {}", totalRead, readChannel == _proxy ? "proxy":"client");
 
         if (totalRead > 0) {
           readKey.cancel();

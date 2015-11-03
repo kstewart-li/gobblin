@@ -1,4 +1,5 @@
 package gobblin.tunnel;
+import java.io.BufferedOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.sql.Connection;
@@ -6,6 +7,7 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang.StringUtils;
 import org.testng.annotations.Test;
 
 import java.io.BufferedReader;
@@ -18,8 +20,12 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -31,10 +37,36 @@ import static org.testng.Assert.assertFalse;
 
 @Test
 public class TestTunnelWithArbitraryTCPTraffic {
-  private abstract class MockServer implements Runnable {
+  private static void sleepQuietly(long millis) {
+    try {
+      Thread.sleep(millis);
+    } catch (InterruptedException e) {
+    }
+  }
+
+  private abstract class EasyThread extends Thread {
+    EasyThread startThread() {
+      start();
+      return this;
+    }
+
+    @Override
+    public void run() {
+      try {
+        runThread();
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
+
+    abstract void runThread() throws Exception;
+  };
+
+
+  private abstract class MockServer {
     volatile boolean _serverRunning = true;
     ServerSocket _server;
-    Set<Thread> _threads = Collections.synchronizedSet(new HashSet<Thread>());
+    Set<EasyThread> _threads = Collections.synchronizedSet(new HashSet<>());
     int _serverSocketPort;
 
     public MockServer start() throws IOException {
@@ -42,23 +74,26 @@ public class TestTunnelWithArbitraryTCPTraffic {
       _server.setSoTimeout(5000);
       _server.bind(new InetSocketAddress("localhost", 0));
       _serverSocketPort = _server.getLocalPort();
-      Thread thread = new Thread(this);
-      thread.start();
-      _threads.add(thread);
+      _threads.add(new EasyThread() {
+        @Override
+        void runThread() throws Exception {
+          runServer();
+        }
+      }.startThread());
       return this;
     }
 
     // accept thread
-    public void run() {
+    public void runServer() {
       while (_serverRunning) {
         try {
           final Socket clientSocket = _server.accept();
           //clientSocket.setSoTimeout(5000);
           System.out.println("Accepted connection on " + getServerSocketPort());
           // client handler thread
-          Thread thread = new Thread() {
+          _threads.add(new EasyThread() {
             @Override
-            public void run() {
+            void runThread() throws Exception {
               try {
                 handleClientSocket(clientSocket);
               } catch (IOException e) {
@@ -66,9 +101,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
               }
               _threads.remove(this);
             }
-          };
-          _threads.add(thread);
-          thread.start();
+          }.startThread());
         } catch (IOException e) {
           e.printStackTrace();
         }
@@ -94,15 +127,20 @@ public class TestTunnelWithArbitraryTCPTraffic {
       stopServer();
     }
 
+    public List<String> getReceivedMessages() {
+      return Collections.emptyList();
+    }
+
     public void stopServer() {
       _serverRunning = false;
-      for (Thread thread : _threads) {
+      for (EasyThread thread : _threads) {
         if (thread.isAlive()) {
           thread.interrupt();
         }
       }
     }
   }
+
   /**
    * Due to the lack of a suitable embeddable proxy server (the Jetty version here is too old and MockServer's Proxy
    * expects SSL traffic and breaks for arbitrary bytes) we had to write our own mini CONNECT proxy.
@@ -154,11 +192,11 @@ public class TestTunnelWithArbitraryTCPTraffic {
           }
           return;
         }
-        InputStream proxyToServerIn = serverSocket.getInputStream();
-        OutputStream proxyToServerOut = serverSocket.getOutputStream();
-        Thread thread = new Thread() {
+        final InputStream proxyToServerIn = serverSocket.getInputStream();
+        final OutputStream proxyToServerOut = serverSocket.getOutputStream();
+        _threads.add(new EasyThread() {
           @Override
-          public void run() {
+          void runThread() throws Exception {
             try {
               IOUtils.copy(clientToProxyIn, proxyToServerOut);
             } catch (IOException e) {
@@ -166,9 +204,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
               stopServer();
             }
           }
-        };
-        _threads.add(thread);
-        thread.start();
+        }.startThread());
         try {
           IOUtils.copy(proxyToServerIn, clientToProxyOut);
         } catch (IOException e) {
@@ -196,7 +232,15 @@ public class TestTunnelWithArbitraryTCPTraffic {
     }.start();
   }
 
+  private MockServer startConnectProxyServer() throws IOException {
+    return startConnectProxyServer(false);
+  }
+
   private MockServer startDoubleEchoServer() throws IOException {
+    return startDoubleEchoServer(0);
+  }
+
+  private MockServer startDoubleEchoServer(final long delay) throws IOException {
     return new MockServer() {
       @Override
       void handleClientSocket(Socket clientSocket) throws IOException {
@@ -204,6 +248,9 @@ public class TestTunnelWithArbitraryTCPTraffic {
         PrintWriter out = new PrintWriter(clientSocket.getOutputStream());
         String line = in.readLine();
         while (line != null && isServerRunning()) {
+          if (delay >  0) {
+            sleepQuietly(delay);
+          }
           out.println(line + " " + line);
           out.flush();
           line = in.readLine();
@@ -247,7 +294,33 @@ public class TestTunnelWithArbitraryTCPTraffic {
   @Test(timeOut = 5000)
   public void testTunnelToEchoServer() throws IOException {
     MockServer doubleEchoServer = startDoubleEchoServer();
-    MockServer proxyServer = startConnectProxyServer(false);
+    MockServer proxyServer = startConnectProxyServer();
+    System.out.println("Server " + doubleEchoServer.getServerSocketPort() + " Proxy " + proxyServer.getServerSocketPort());
+    Optional<Tunnel> tunnel = Tunnel.build("localhost", doubleEchoServer.getServerSocketPort(), "localhost",
+        proxyServer.getServerSocketPort());
+
+    try {
+      int tunnelPort = tunnel.get().getPort();
+      SocketChannel client = SocketChannel.open();
+
+      client.connect(new InetSocketAddress("localhost", tunnelPort));
+      client.write(ByteBuffer.wrap("Knock\n".getBytes()));
+      String response = readFromSocket(client);
+      client.close();
+
+      assertEquals(response, "Knock Knock\n");
+    } finally {
+      doubleEchoServer.stopServer();
+      proxyServer.stopServer();
+      tunnel.get().close();
+    }
+  }
+
+
+  @Test(timeOut = 5000)
+  public void testTunnelToDelayedEchoServer() throws IOException {
+    MockServer doubleEchoServer = startDoubleEchoServer(2000);
+    MockServer proxyServer = startConnectProxyServer();
     System.out.println("Server " + doubleEchoServer.getServerSocketPort() + " Proxy " + proxyServer.getServerSocketPort());
     Optional<Tunnel> tunnel = Tunnel.build("localhost", doubleEchoServer.getServerSocketPort(), "localhost",
         proxyServer.getServerSocketPort());
@@ -271,7 +344,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
   @Test(timeOut = 5000)
   public void testTunnelToEchoServerMultiRequest() throws IOException {
-    MockServer proxyServer = startConnectProxyServer(false);
+    MockServer proxyServer = startConnectProxyServer();
     MockServer doubleEchoServer = startDoubleEchoServer();
     Optional<Tunnel> tunnel = Tunnel.build("localhost", doubleEchoServer.getServerSocketPort(),
         "localhost", proxyServer.getServerSocketPort());
@@ -320,36 +393,39 @@ public class TestTunnelWithArbitraryTCPTraffic {
     }.start();
   }
 
+  private void runClientToTalkFirstServer(int tunnelPort) throws IOException {
+    SocketChannel client = SocketChannel.open();
+
+    client.connect(new InetSocketAddress("localhost", tunnelPort));
+    String response0 = readFromSocket(client);
+    System.out.println(response0);
+
+    client.write(ByteBuffer.wrap("Knock\n".getBytes()));
+    String response1 = readFromSocket(client);
+    System.out.println(response1);
+
+
+    client.write(ByteBuffer.wrap("Hello\n".getBytes()));
+    String response2 = readFromSocket(client);
+    System.out.println(response2);
+
+    client.close();
+
+    assertEquals(response0, "Hello\n");
+    assertEquals(response1, "Knock Knock\n");
+    assertEquals(response2, "Hello Hello\n");
+  }
+
   @Test(timeOut = 5000)
   public void testTunnelToEchoServerThatRespondsFirst() throws IOException {
-    MockServer proxyServer = startConnectProxyServer(false);
+    MockServer proxyServer = startConnectProxyServer();
     MockServer talkFirstEchoServer = startTalkFirstEchoServer();
     Optional<Tunnel> tunnel = Tunnel.build("localhost", talkFirstEchoServer.getServerSocketPort(),
         "localhost", proxyServer.getServerSocketPort());
 
     try {
       int tunnelPort = tunnel.get().getPort();
-      SocketChannel client = SocketChannel.open();
-
-      client.connect(new InetSocketAddress("localhost", tunnelPort));
-      String response0 = readFromSocket(client);
-      System.out.println(response0);
-
-      client.write(ByteBuffer.wrap("Knock\n".getBytes()));
-      String response1 = readFromSocket(client);
-      System.out.println(response1);
-
-
-      client.write(ByteBuffer.wrap("Hello\n".getBytes()));
-      String response2 = readFromSocket(client);
-      System.out.println(response2);
-
-
-      client.close();
-
-      assertEquals(response0, "Hello\n");
-      assertEquals(response1, "Knock Knock\n");
-      assertEquals(response2, "Hello Hello\n");
+      runClientToTalkFirstServer(tunnelPort);
     } finally {
       talkFirstEchoServer.stopServer();
       proxyServer.stopServer();
@@ -359,7 +435,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
   @Test(timeOut = 5000)
   public void testTunnelToEchoServerThatRespondsFirstWithMixedProxyAndServerResponseInBuffer() throws IOException {
-    MockServer proxyServer = startConnectProxyServer(false);
+    MockServer proxyServer = startConnectProxyServer();
     MockServer talkFirstEchoServer = startTalkFirstEchoServer();
     Optional<Tunnel> tunnel = Tunnel.build("localhost", talkFirstEchoServer.getServerSocketPort(),
         "localhost", proxyServer.getServerSocketPort());
@@ -367,27 +443,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
     try {
       int tunnelPort = tunnel.get().getPort();
-      SocketChannel client = SocketChannel.open();
-
-      client.connect(new InetSocketAddress("localhost", tunnelPort));
-      String response0 = readFromSocket(client);
-      System.out.println(response0);
-
-      client.write(ByteBuffer.wrap("Knock\n".getBytes()));
-      String response1 = readFromSocket(client);
-      System.out.println(response1);
-
-
-      client.write(ByteBuffer.wrap("Hello\n".getBytes()));
-      String response2 = readFromSocket(client);
-      System.out.println(response2);
-
-
-      client.close();
-
-      assertEquals(response0, "Hello\n");
-      assertEquals(response1, "Knock Knock\n");
-      assertEquals(response2, "Hello Hello\n");
+      runClientToTalkFirstServer(tunnelPort);
     } finally {
       talkFirstEchoServer.stopServer();
       proxyServer.stopServer();
@@ -396,7 +452,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
   }
 
   @Test(timeOut = 5000)
-  public void testGCingTunnelToEchoServerThatRespondsFirstAcrossMultipleDrainReads() throws IOException {
+  public void testTunnelToEchoServerThatRespondsFirstAcrossMultipleDrainReads() throws IOException {
     MockServer proxyServer = startConnectProxyServer(true);
     MockServer talkFirstEchoServer = startTalkFirstEchoServer();
     Optional<Tunnel> tunnel = Tunnel.build("localhost", talkFirstEchoServer.getServerSocketPort(),
@@ -405,26 +461,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
     try {
       int tunnelPort = tunnel.get().getPort();
-      SocketChannel client = SocketChannel.open();
-
-      client.connect(new InetSocketAddress("localhost", tunnelPort));
-      String response0 = readFromSocket(client);
-      System.out.println(response0);
-
-      client.write(ByteBuffer.wrap("Knock\n".getBytes()));
-      String response1 = readFromSocket(client);
-      System.out.println(response1);
-
-
-      client.write(ByteBuffer.wrap("Hello\n".getBytes()));
-      String response2 = readFromSocket(client);
-      System.out.println(response2);
-
-      client.close();
-
-      assertEquals(response0, "Hello\n");
-      assertEquals(response1, "Knock Knock\n");
-      assertEquals(response2, "Hello Hello\n");
+      runClientToTalkFirstServer(tunnelPort);
     } finally {
       talkFirstEchoServer.stopServer();
       proxyServer.stopServer();
@@ -432,10 +469,233 @@ public class TestTunnelWithArbitraryTCPTraffic {
     }
   }
 
+
+  @Test(timeOut = 5000)
+  public void testTunnelToEchoServerThatRespondsFirstAcrossMultipleDrainReadsWithMultipleClients()
+      throws IOException, InterruptedException {
+    MockServer proxyServer = startConnectProxyServer(true);
+    MockServer talkFirstEchoServer = startTalkFirstEchoServer();
+    Optional<Tunnel> tunnel = Tunnel.build("localhost", talkFirstEchoServer.getServerSocketPort(),
+        "localhost", proxyServer.getServerSocketPort());
+    tunnel.get().simulateDelayBetweenConnectWriteAndRead(true);
+
+    try {
+      final int tunnelPort = tunnel.get().getPort();
+      List<Thread> threads = new ArrayList<>();
+      for (int i = 0; i < 5; i++) {
+        threads.add(new EasyThread() {
+          @Override
+          void runThread() throws Exception {
+            try {
+              runClientToTalkFirstServer(tunnelPort);
+            } catch (IOException e) {
+              e.printStackTrace();
+            }
+          }
+        }.startThread());
+      }
+      for (Thread t : threads) {
+        t.join();
+      }
+    } finally {
+      talkFirstEchoServer.stopServer();
+      proxyServer.stopServer();
+      tunnel.get().close();
+    }
+  }
+
+  private void runSimultaneousDataTransfers(boolean useTunnel, int nclients) throws IOException, InterruptedException {
+    long t0 = System.currentTimeMillis();
+    int nMsgs = 50;
+    final List<String> msgsFromServer = new ArrayList<String>(nMsgs);
+    for (int i = 0; i < nMsgs; i++) {
+      msgsFromServer.add(i + " " + StringUtils.repeat("Babble babble ", 100000));
+    }
+    final Map<String, List<String>> msgsRecvdAtServer = new HashMap<>();
+
+    final Map<String, List<String>> msgsFromClients = new HashMap<>();
+    for (int c = 0; c < nclients ; c++) {
+      msgsRecvdAtServer.put("" + c, new ArrayList<>(nMsgs));
+      List<String> msgsFromClient = new ArrayList<>(nMsgs);
+      for (int i = 0; i < nMsgs; i++) {
+        msgsFromClient.add(c + ":" + i + " " + StringUtils.repeat("Blahhh Blahhh ", 100000));
+      }
+      msgsFromClients.put("" + c, msgsFromClient);
+    }
+    final Map<String, List<String>> msgsRecvdAtClients = new HashMap<>();
+
+    MockServer talkPastServer = new MockServer() {
+      @Override
+      void handleClientSocket(Socket clientSocket) throws IOException {
+        System.out.println("Writing to client");
+        try {
+          BufferedOutputStream serverOut = new BufferedOutputStream(clientSocket.getOutputStream());
+          EasyThread clientWriterThread = new EasyThread() {
+            @Override
+            void runThread() throws Exception {
+              long t = System.currentTimeMillis();
+              try {
+                for (String msg : msgsFromServer) {
+                  serverOut.write(msg.getBytes());
+                  serverOut.write("\n".getBytes());
+                  sleepQuietly(2);
+                }
+              } catch (IOException e) {
+                e.printStackTrace();
+              }
+              System.out.println("Server done writing in " + (System.currentTimeMillis() - t) + " ms");
+            }
+          }.startThread();
+          _threads.add(clientWriterThread);
+
+          BufferedReader serverIn = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+          String line = serverIn.readLine();
+          while (line != null && !line.equals("Goodbye")) {
+            //System.out.println("Client said [" + line.substring(0, 32) + "... ]");
+            String [] tokens = line.split(":", 2);
+            String client = tokens[0];
+            msgsRecvdAtServer.get(client).add(line);
+            line = serverIn.readLine();
+          }
+          System.out.println("Server done reading");
+          try {
+            clientWriterThread.join();
+          } catch (InterruptedException e) {
+          }
+          serverOut.write("Goodbye\n".getBytes());
+          serverOut.flush();
+          clientSocket.close();
+        } catch (IOException e) {
+          e.printStackTrace();
+          throw e;
+        }
+      }
+    }.start();
+
+    int targetPort = talkPastServer.getServerSocketPort();
+    Optional<Tunnel> tunnel = Optional.empty();
+    MockServer proxyServer = null;
+    if (useTunnel) {
+      proxyServer = startConnectProxyServer();
+      tunnel = Tunnel.build("localhost", talkPastServer.getServerSocketPort(),
+          "localhost", proxyServer.getServerSocketPort());
+      targetPort = tunnel.get().getPort();
+    }
+
+    try {
+      List<Thread> clientThreads = new ArrayList<>();
+      final int portToUse = targetPort;
+      for (int c = 0; c < nclients; c++) {
+        msgsRecvdAtClients.put("" + c, new ArrayList<>(nMsgs));
+      }
+
+      for (int c = 0; c < nclients; c++) {
+        final int clientId = c;
+        clientThreads.add(new EasyThread() {
+          @Override
+          void runThread() throws Exception {
+            long t = System.currentTimeMillis();
+            System.out.println("\t" + clientId + ": Client starting");
+            final List<String> msgsFromClient = msgsFromClients.get("" + clientId);
+            List<String> msgsRecvdAtClient = msgsRecvdAtClients.get("" + clientId);
+            //final SocketChannel client = SocketChannel.open(); // tunnel test hangs for some reason with SocketChannel
+            Socket client = new Socket();
+            client.connect(new InetSocketAddress("localhost", portToUse));
+            EasyThread serverReaderThread = new EasyThread() {
+              @Override
+              public void runThread() {
+                try {
+                  BufferedReader clientIn = new BufferedReader(new InputStreamReader(client.getInputStream()));
+                  String line = clientIn.readLine();
+                  while (line != null && !line.equals("Goodbye")) {
+                    //System.out.println("\t" + clientId + ": Server said [" + line.substring(0, 32) + "... ]");
+                    msgsRecvdAtClient.add(line);
+                    line = clientIn.readLine();
+                  }
+                } catch (IOException e) {
+                  e.printStackTrace();
+                }
+                System.out.println("\t" + clientId + ": Client done reading");
+              }
+            }.startThread();
+            BufferedOutputStream clientOut = new BufferedOutputStream(client.getOutputStream());
+            for (String msg : msgsFromClient) {
+              //System.out.println(clientId + " sending " + msg.length() + " bytes");
+              clientOut.write(msg.getBytes());
+              clientOut.write("\n".getBytes());
+              sleepQuietly(2);
+            }
+            clientOut.write(("Goodbye\n".getBytes()));
+            clientOut.flush();
+            System.out.println("\t" + clientId + ": Client done writing in " + (System.currentTimeMillis() - t) + " ms");
+            serverReaderThread.join();
+            System.out.println("\t" + clientId + ": Client done in " + (System.currentTimeMillis() - t) + " ms");
+            client.close();
+          }
+        }.startThread());
+      }
+      for (Thread clientThread : clientThreads) {
+        clientThread.join();
+      }
+      System.out.println("All data transfer done in " + (System.currentTimeMillis() - t0) + " ms");
+    } finally {
+      talkPastServer.stopServer();
+      if (tunnel.isPresent()) {
+        proxyServer.stopServer();
+        tunnel.get().close();
+      }
+
+      System.out.println("\tComparing client sent to server received");
+      assertEquals(msgsFromClients, msgsRecvdAtServer);
+
+      System.out.println("\tComparing server sent to client received");
+      for (List<String> msgsRecvdAtClient : msgsRecvdAtClients.values()) {
+        assertEquals(msgsFromServer, msgsRecvdAtClient);
+      }
+      System.out.println("\tDone");
+    }
+  }
+
+  // Baseline test2 to ensure simultaneous data transfer protocol is fine
+  @Test(timeOut = 20000)
+  public void testSimultaneousDataTransfersWithDirectConnection() throws IOException, InterruptedException {
+    runSimultaneousDataTransfers(false, 1);
+  }
+
+  @Test(timeOut = 20000)
+  public void testSimultaneousDataTransfersWithDirectConnectionAndMultipleClients() throws IOException, InterruptedException {
+    runSimultaneousDataTransfers(false, 5);
+  }
+  /*
+    I wrote this test because I saw this symptom once randomly while testing with Gobblin. Test passes, but occasionally
+    we see the following warning in the logs:
+
+    15/10/29 21:11:17 WARN tunnel.Tunnel: exception handling event on java.nio.channels.SocketChannel[connected local=/127.0.0.1:34669 remote=/127.0.0.1:38578]
+    java.nio.channels.CancelledKeyException
+      at sun.nio.ch.SelectionKeyImpl.ensureValid(SelectionKeyImpl.java:73)
+      at sun.nio.ch.SelectionKeyImpl.readyOps(SelectionKeyImpl.java:87)
+      at java.nio.channels.SelectionKey.isWritable(SelectionKey.java:312)
+      at gobblin.tunnel.Tunnel$ReadWriteHandler.write(Tunnel.java:423)
+      at gobblin.tunnel.Tunnel$ReadWriteHandler.call(Tunnel.java:403)
+      at gobblin.tunnel.Tunnel$ReadWriteHandler.call(Tunnel.java:365)
+      at gobblin.tunnel.Tunnel$Dispatcher.dispatch(Tunnel.java:142)
+      at gobblin.tunnel.Tunnel$Dispatcher.run(Tunnel.java:127)
+      at java.lang.Thread.run(Thread.java:745)
+   */
+  @Test(timeOut = 20000)
+  public void testSimultaneousDataTransfersWithTunnel() throws IOException, InterruptedException {
+    runSimultaneousDataTransfers(true, 1);
+  }
+
+  @Test(timeOut = 20000)
+  public void testSimultaneousDataTransfersWithTunnelAndMultipleClients() throws IOException, InterruptedException {
+    runSimultaneousDataTransfers(true, 5);
+  }
+
   @Test(expectedExceptions = IOException.class)
   public void testTunnelWhereProxyConnectionToServerFailsWithWriteFirstClient() throws IOException {
-    MockServer proxyServer = startConnectProxyServer(false);
-    final int nonExistentPort = 54321;
+    MockServer proxyServer = startConnectProxyServer();
+    final int nonExistentPort = 54321; // hope this doesn't exist!
     Optional<Tunnel> tunnel = Tunnel.build("localhost", nonExistentPort, "localhost", proxyServer.getServerSocketPort());
     try {
       int tunnelPort = tunnel.get().getPort();
@@ -460,8 +720,8 @@ public class TestTunnelWithArbitraryTCPTraffic {
   // unless it configures a timeout on the socket. This could be a problem when the remote provider is down or
   // non-existent. If we cannot make this test pass, we can delete it
   @Test(enabled = false, timeOut = 5000, expectedExceptions = IOException.class)
-  public void testTunnelWhereProxyConnectionToServerFailsWithReadFirstClient() throws IOException, InterruptedException {
-    MockServer proxyServer = startConnectProxyServer(false);
+  public void testTunnelWhereProxyConnectionToServerFailsWithReadFirstClient() throws IOException {
+    MockServer proxyServer = startConnectProxyServer();
     final int nonExistentPort = 54321;
     Optional<Tunnel> tunnel = Tunnel.build("localhost", nonExistentPort, "localhost", proxyServer.getServerSocketPort());
     try {
@@ -473,7 +733,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
       while(true) {
         String response1 = readFromSocket(client);
         System.out.println("Response = " + response1);
-        Thread.sleep(1000);
+        sleepQuietly(1000);
       }
     } finally {
       proxyServer.stopServer();
@@ -488,7 +748,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
   @Test(timeOut = 5000)
   public void testTunnelThreadDeadAfterClose() throws IOException, InterruptedException {
-    MockServer proxyServer = startConnectProxyServer(false);
+    MockServer proxyServer = startConnectProxyServer();
     MockServer talkFirstEchoServer = startTalkFirstEchoServer();
     Optional<Tunnel> tunnel = Tunnel.build("localhost", talkFirstEchoServer.getServerSocketPort(),
         "localhost", proxyServer.getServerSocketPort());
@@ -525,7 +785,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
    */
   @Test(enabled = false, timeOut = 5000)
   public void accessEnsembleDB() throws Exception{
-    MockServer proxyServer = startConnectProxyServer(false);
+    MockServer proxyServer = startConnectProxyServer();
     Optional<Tunnel> tunnel = Tunnel.build("useastdb.ensembl.org", 5306,
         "localhost", proxyServer.getServerSocketPort());
 
