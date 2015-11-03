@@ -53,20 +53,20 @@ public class TestTunnelWithArbitraryTCPTraffic {
     @Override
     public void run() {
       try {
-        runThread();
+        runQuietly();
       } catch (Exception e) {
         e.printStackTrace();
       }
     }
 
-    abstract void runThread() throws Exception;
+    abstract void runQuietly() throws Exception;
   };
 
 
   private abstract class MockServer {
     volatile boolean _serverRunning = true;
     ServerSocket _server;
-    Set<EasyThread> _threads = Collections.synchronizedSet(new HashSet<>());
+    Set<EasyThread> _threads = Collections.synchronizedSet(new HashSet<EasyThread>());
     int _serverSocketPort;
 
     public MockServer start() throws IOException {
@@ -76,7 +76,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
       _serverSocketPort = _server.getLocalPort();
       _threads.add(new EasyThread() {
         @Override
-        void runThread() throws Exception {
+        void runQuietly() throws Exception {
           runServer();
         }
       }.startThread());
@@ -93,7 +93,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
           // client handler thread
           _threads.add(new EasyThread() {
             @Override
-            void runThread() throws Exception {
+            void runQuietly() throws Exception {
               try {
                 handleClientSocket(clientSocket);
               } catch (IOException e) {
@@ -196,7 +196,7 @@ public class TestTunnelWithArbitraryTCPTraffic {
         final OutputStream proxyToServerOut = serverSocket.getOutputStream();
         _threads.add(new EasyThread() {
           @Override
-          void runThread() throws Exception {
+          void runQuietly() throws Exception {
             try {
               IOUtils.copy(clientToProxyIn, proxyToServerOut);
             } catch (IOException e) {
@@ -481,11 +481,11 @@ public class TestTunnelWithArbitraryTCPTraffic {
 
     try {
       final int tunnelPort = tunnel.get().getPort();
-      List<Thread> threads = new ArrayList<>();
+      List<EasyThread> threads = new ArrayList<EasyThread>();
       for (int i = 0; i < 5; i++) {
         threads.add(new EasyThread() {
           @Override
-          void runThread() throws Exception {
+          void runQuietly() throws Exception {
             try {
               runClientToTalkFirstServer(tunnelPort);
             } catch (IOException e) {
@@ -504,35 +504,35 @@ public class TestTunnelWithArbitraryTCPTraffic {
     }
   }
 
-  private void runSimultaneousDataTransfers(boolean useTunnel, int nclients) throws IOException, InterruptedException {
+  private void runSimultaneousDataExchange(boolean useTunnel, int nclients) throws IOException, InterruptedException {
     long t0 = System.currentTimeMillis();
     int nMsgs = 50;
     final List<String> msgsFromServer = new ArrayList<String>(nMsgs);
     for (int i = 0; i < nMsgs; i++) {
-      msgsFromServer.add(i + " " + StringUtils.repeat("Babble babble ", 100000));
+      msgsFromServer.add(i + " " + StringUtils.repeat("Babble babble ", 10000));
     }
-    final Map<String, List<String>> msgsRecvdAtServer = new HashMap<>();
+    final Map<String, List<String>> msgsRecvdAtServer = new HashMap<String, List<String>>();
 
-    final Map<String, List<String>> msgsFromClients = new HashMap<>();
+    final Map<String, List<String>> msgsFromClients = new HashMap<String, List<String>>();
     for (int c = 0; c < nclients ; c++) {
-      msgsRecvdAtServer.put("" + c, new ArrayList<>(nMsgs));
-      List<String> msgsFromClient = new ArrayList<>(nMsgs);
+      msgsRecvdAtServer.put("" + c, new ArrayList<String>(nMsgs));
+      List<String> msgsFromClient = new ArrayList<String>(nMsgs);
       for (int i = 0; i < nMsgs; i++) {
-        msgsFromClient.add(c + ":" + i + " " + StringUtils.repeat("Blahhh Blahhh ", 100000));
+        msgsFromClient.add(c + ":" + i + " " + StringUtils.repeat("Blahhh Blahhh ", 10000));
       }
       msgsFromClients.put("" + c, msgsFromClient);
     }
-    final Map<String, List<String>> msgsRecvdAtClients = new HashMap<>();
+    final Map<String, List<String>> msgsRecvdAtClients = new HashMap<String, List<String>>();
 
     MockServer talkPastServer = new MockServer() {
       @Override
       void handleClientSocket(Socket clientSocket) throws IOException {
         System.out.println("Writing to client");
         try {
-          BufferedOutputStream serverOut = new BufferedOutputStream(clientSocket.getOutputStream());
+          final BufferedOutputStream serverOut = new BufferedOutputStream(clientSocket.getOutputStream());
           EasyThread clientWriterThread = new EasyThread() {
             @Override
-            void runThread() throws Exception {
+            void runQuietly() throws Exception {
               long t = System.currentTimeMillis();
               try {
                 for (String msg : msgsFromServer) {
@@ -583,27 +583,27 @@ public class TestTunnelWithArbitraryTCPTraffic {
     }
 
     try {
-      List<Thread> clientThreads = new ArrayList<>();
+      List<EasyThread> clientThreads = new ArrayList<EasyThread>();
       final int portToUse = targetPort;
       for (int c = 0; c < nclients; c++) {
-        msgsRecvdAtClients.put("" + c, new ArrayList<>(nMsgs));
+        msgsRecvdAtClients.put("" + c, new ArrayList<String>(nMsgs));
       }
 
       for (int c = 0; c < nclients; c++) {
         final int clientId = c;
         clientThreads.add(new EasyThread() {
           @Override
-          void runThread() throws Exception {
+          void runQuietly() throws Exception {
             long t = System.currentTimeMillis();
             System.out.println("\t" + clientId + ": Client starting");
             final List<String> msgsFromClient = msgsFromClients.get("" + clientId);
-            List<String> msgsRecvdAtClient = msgsRecvdAtClients.get("" + clientId);
+            final List<String> msgsRecvdAtClient = msgsRecvdAtClients.get("" + clientId);
             //final SocketChannel client = SocketChannel.open(); // tunnel test hangs for some reason with SocketChannel
-            Socket client = new Socket();
+            final Socket client = new Socket();
             client.connect(new InetSocketAddress("localhost", portToUse));
             EasyThread serverReaderThread = new EasyThread() {
               @Override
-              public void runThread() {
+              public void runQuietly() {
                 try {
                   BufferedReader clientIn = new BufferedReader(new InputStreamReader(client.getInputStream()));
                   String line = clientIn.readLine();
@@ -657,14 +657,14 @@ public class TestTunnelWithArbitraryTCPTraffic {
   }
 
   // Baseline test2 to ensure simultaneous data transfer protocol is fine
-  @Test(timeOut = 20000)
-  public void testSimultaneousDataTransfersWithDirectConnection() throws IOException, InterruptedException {
-    runSimultaneousDataTransfers(false, 1);
+  @Test(timeOut = 30000)
+  public void testSimultaneousDataExchangeWithDirectConnection() throws IOException, InterruptedException {
+    runSimultaneousDataExchange(false, 1);
   }
 
-  @Test(timeOut = 20000)
-  public void testSimultaneousDataTransfersWithDirectConnectionAndMultipleClients() throws IOException, InterruptedException {
-    runSimultaneousDataTransfers(false, 5);
+  @Test(timeOut = 30000)
+  public void testSimultaneousDataExchangeWithDirectConnectionAndMultipleClients() throws IOException, InterruptedException {
+    runSimultaneousDataExchange(false, 5);
   }
   /*
     I wrote this test because I saw this symptom once randomly while testing with Gobblin. Test passes, but occasionally
@@ -682,14 +682,14 @@ public class TestTunnelWithArbitraryTCPTraffic {
       at gobblin.tunnel.Tunnel$Dispatcher.run(Tunnel.java:127)
       at java.lang.Thread.run(Thread.java:745)
    */
-  @Test(timeOut = 20000)
-  public void testSimultaneousDataTransfersWithTunnel() throws IOException, InterruptedException {
-    runSimultaneousDataTransfers(true, 1);
+  @Test(timeOut = 30000)
+  public void testSimultaneousDataExchangeWithTunnel() throws IOException, InterruptedException {
+    runSimultaneousDataExchange(true, 1);
   }
 
-  @Test(timeOut = 20000)
-  public void testSimultaneousDataTransfersWithTunnelAndMultipleClients() throws IOException, InterruptedException {
-    runSimultaneousDataTransfers(true, 5);
+  @Test(timeOut = 30000)
+  public void testSimultaneousDataExchangeWithTunnelAndMultipleClients() throws IOException, InterruptedException {
+    runSimultaneousDataExchange(true, 5);
   }
 
   @Test(expectedExceptions = IOException.class)
