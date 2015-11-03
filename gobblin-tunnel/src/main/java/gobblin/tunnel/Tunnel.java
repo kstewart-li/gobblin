@@ -420,11 +420,11 @@ public class Tunnel {
       SocketChannel readChannel = null;
       SelectionKey writeKey = null;
 
-      if (_selector.selectedKeys().contains(proxyKey) && proxyKey.isWritable()) {
+      if (_selector.selectedKeys().contains(proxyKey) && proxyKey.isValid() && proxyKey.isWritable()) {
         writeChannel = _proxy;
         readChannel = _client;
         writeKey = proxyKey;
-      } else if (_selector.selectedKeys().contains(clientKey) && clientKey.isWritable()) {
+      } else if (_selector.selectedKeys().contains(clientKey) && clientKey.isValid() && clientKey.isWritable()) {
         writeChannel = _client;
         readChannel = _proxy;
         writeKey = clientKey;
