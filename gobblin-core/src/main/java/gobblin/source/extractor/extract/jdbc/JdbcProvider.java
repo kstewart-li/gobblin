@@ -15,8 +15,8 @@ package gobblin.source.extractor.extract.jdbc;
 import gobblin.tunnel.Tunnel;
 import org.apache.commons.dbcp.BasicDataSource;
 
-import java.net.URI;
-import java.net.URISyntaxException;
+import java.sql.SQLException;
+import java.util.Optional;
 
 
 /**
@@ -25,6 +25,7 @@ import java.net.URISyntaxException;
  * @author nveeramr
  */
 public class JdbcProvider extends BasicDataSource {
+  Tunnel _tunnel = null;
   // If extract type is not provided then consider it as a default type
   public JdbcProvider(String driver, String connectionUrl, String user, String password, int numconn, int timeout) {
     this.connect(driver, connectionUrl, user, password, numconn, timeout, "DEFAULT", null, -1);
@@ -52,7 +53,9 @@ public class JdbcProvider extends BasicDataSource {
       int portStart =  connectionUrl.indexOf(":", hostStart);
       remoteHost = connectionUrl.substring(hostStart, portStart);
       remotePort = Integer.decode(connectionUrl.substring(portStart + 1, connectionUrl.indexOf("/", portStart)));
-      int tunnelPort = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort).get().getPort();
+
+      _tunnel = Tunnel.build(remoteHost, remotePort, proxyHost, proxyPort).get();
+      int tunnelPort = _tunnel.getPort();
 
       //mangle connectionUrl, replace hostname with localhost -- hopefully the hostname is not needed!!!
       String newConnectionUrl = connectionUrl.replaceFirst(remoteHost, "127.0.0.1")
@@ -68,5 +71,13 @@ public class JdbcProvider extends BasicDataSource {
     this.setInitialSize(0);
     this.setMaxIdle(numconn);
     this.setMaxActive(timeout);
+  }
+
+  @Override
+  public synchronized void close() throws SQLException {
+    super.close();
+    if (_tunnel != null) {
+      _tunnel.close();
+    }
   }
 }
