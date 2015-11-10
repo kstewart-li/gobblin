@@ -25,7 +25,7 @@ import java.util.Optional;
  * @author nveeramr
  */
 public class JdbcProvider extends BasicDataSource {
-  Tunnel _tunnel = null;
+  private Tunnel _tunnel;
   // If extract type is not provided then consider it as a default type
   public JdbcProvider(String driver, String connectionUrl, String user, String password, int numconn, int timeout) {
     this.connect(driver, connectionUrl, user, password, numconn, timeout, "DEFAULT", null, -1);
